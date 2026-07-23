@@ -1,0 +1,17 @@
+# node / wxt
+node_modules/
+.output/
+.wxt/
+*.zip
+
+# rust
+/server/target/
+
+# env / secrets
+.env
+.env.local
+.env.*.local
+
+# os / editor
+.DS_Store
+.idea/
