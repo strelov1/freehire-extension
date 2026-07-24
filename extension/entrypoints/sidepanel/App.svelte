@@ -7,6 +7,14 @@
     type RuntimeMessage,
   } from '../../lib/protocol';
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
+  import {
+    freehireSlugFromUrl,
+    getJob,
+    getMatch,
+    type FreehireJob,
+    type JobMatch,
+  } from '../../lib/freehire';
+  import MatchCard from './MatchCard.svelte';
 
   const SERVER_URL = 'ws://localhost:3899/ws';
 
@@ -20,6 +28,12 @@
   let user = $state<HireUser | null>(null);
   let authBusy = $state(false);
   let authError = $state('');
+
+  type MatchStatus = 'idle' | 'loading' | 'ready' | 'error' | 'not-a-job';
+  let matchStatus = $state<MatchStatus>('idle');
+  let matchJob = $state<FreehireJob | null>(null);
+  let match = $state<JobMatch | null>(null);
+  let matchError = $state('');
 
   onMount(() => {
     socket = new WebSocket(SERVER_URL);
@@ -35,7 +49,33 @@
 
   async function restoreSession() {
     const token = await getToken();
-    if (token) user = await fetchMe(token);
+    if (token) {
+      user = await fetchMe(token);
+      if (user) void loadMatch();
+    }
+  }
+
+  async function loadMatch() {
+    const token = await getToken();
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    const slug = tab?.url ? freehireSlugFromUrl(tab.url) : null;
+    if (!token || !slug) {
+      matchStatus = 'not-a-job';
+      matchJob = null;
+      match = null;
+      return;
+    }
+    matchStatus = 'loading';
+    matchError = '';
+    try {
+      const [job, m] = await Promise.all([getJob(slug, token), getMatch(slug, token)]);
+      matchJob = job;
+      match = m;
+      matchStatus = 'ready';
+    } catch (err) {
+      matchError = err instanceof Error ? err.message : 'Could not load match';
+      matchStatus = 'error';
+    }
   }
 
   async function handleSignIn() {
@@ -45,6 +85,7 @@
       const token = await signIn();
       user = await fetchMe(token);
       if (!user) authError = 'Signed in, but could not load your account.';
+      else void loadMatch();
     } catch (err) {
       authError = err instanceof Error ? err.message : 'Sign-in failed';
     } finally {
@@ -106,6 +147,21 @@
       <div class="auth-error">{authError}</div>
     {/if}
   </header>
+
+  {#if user}
+    {#if matchStatus === 'ready' && matchJob && match}
+      <MatchCard job={matchJob} {match} />
+    {:else if matchStatus === 'loading'}
+      <p class="match-hint">Analyzing match…</p>
+    {:else if matchStatus === 'error'}
+      <p class="match-hint err">Match unavailable: {matchError}</p>
+    {:else if matchStatus === 'not-a-job'}
+      <p class="match-hint">
+        Open a freehire job page to see your match.
+        <button class="link" onclick={loadMatch}>Refresh</button>
+      </p>
+    {/if}
+  {/if}
 
   <div class="messages">
     {#each messages as message}
@@ -206,6 +262,16 @@
 
   .auth-error {
     font-size: 12px;
+    color: #b42318;
+  }
+
+  .match-hint {
+    font-size: 12px;
+    color: #999;
+    margin: 12px;
+  }
+
+  .match-hint.err {
     color: #b42318;
   }
 

@@ -5,7 +5,7 @@ import { browser } from 'wxt/browser';
  * so the launchWebAuthFlow popup carries the session cookie and the /api proxy
  * forwards it — mirroring production, where SPA and API are one origin.
  */
-const HIRE_ORIGIN = 'http://localhost:5173';
+export const HIRE_ORIGIN = 'http://localhost:5173';
 
 const TOKEN_KEY = 'hireToken';
 
