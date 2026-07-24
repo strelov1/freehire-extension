@@ -26,4 +26,4 @@
 ## 5. Verify
 
 - [x] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build` green
-- [ ] 5.2 Live end-to-end against a local Roy (`ROY_ORIGIN`): sign in → send a message → see a streamed reply; "Read page" reaches the agent
+- [x] 5.2 Live end-to-end against a local Roy (`ROY_ORIGIN`): sign in → send a message → see a streamed reply; "Read page" reaches the agent
