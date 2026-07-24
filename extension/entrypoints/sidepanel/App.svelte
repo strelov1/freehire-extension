@@ -6,6 +6,7 @@
     type ClientEvent,
     type RuntimeMessage,
   } from '../../lib/protocol';
+  import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
 
   const SERVER_URL = 'ws://localhost:3899/ws';
 
@@ -16,6 +17,10 @@
   let connected = $state(false);
   let socket: WebSocket | null = null;
 
+  let user = $state<HireUser | null>(null);
+  let authBusy = $state(false);
+  let authError = $state('');
+
   onMount(() => {
     socket = new WebSocket(SERVER_URL);
     socket.addEventListener('open', () => (connected = true));
@@ -24,8 +29,33 @@
       const event = parseServerEvent(JSON.parse(e.data));
       if (event) messages.push({ role: 'assistant', text: event.text });
     });
+    void restoreSession();
     return () => socket?.close();
   });
+
+  async function restoreSession() {
+    const token = await getToken();
+    if (token) user = await fetchMe(token);
+  }
+
+  async function handleSignIn() {
+    authBusy = true;
+    authError = '';
+    try {
+      const token = await signIn();
+      user = await fetchMe(token);
+      if (!user) authError = 'Signed in, but could not load your account.';
+    } catch (err) {
+      authError = err instanceof Error ? err.message : 'Sign-in failed';
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  async function handleSignOut() {
+    await signOut();
+    user = null;
+  }
 
   function send(event: ClientEvent) {
     socket?.send(JSON.stringify(event));
@@ -56,10 +86,25 @@
 
 <div class="app">
   <header>
-    <strong>freehire</strong>
-    <span class="status" class:online={connected}>
-      {connected ? 'connected' : 'offline'}
-    </span>
+    <div class="top">
+      <strong>freehire</strong>
+      <span class="status" class:online={connected}>
+        {connected ? 'connected' : 'offline'}
+      </span>
+    </div>
+    <div class="auth">
+      {#if user}
+        <span class="who">Signed in as <b>{user.email}</b></span>
+        <button class="link" onclick={handleSignOut}>Sign out</button>
+      {:else}
+        <button class="signin" onclick={handleSignIn} disabled={authBusy}>
+          {authBusy ? 'Signing in…' : 'Sign in with freehire'}
+        </button>
+      {/if}
+    </div>
+    {#if authError}
+      <div class="auth-error">{authError}</div>
+    {/if}
   </header>
 
   <div class="messages">
@@ -97,10 +142,16 @@
 
   header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 6px;
     padding: 10px 12px;
     border-bottom: 1px solid #e5e5e5;
+  }
+
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
   .status {
@@ -110,6 +161,52 @@
 
   .status.online {
     color: #1a8917;
+  }
+
+  .auth {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .who {
+    color: #555;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .signin {
+    padding: 6px 10px;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+  }
+
+  .signin:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .link {
+    border: none;
+    background: none;
+    color: #2563eb;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 0;
+  }
+
+  .auth-error {
+    font-size: 12px;
+    color: #b42318;
   }
 
   .messages {
