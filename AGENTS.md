@@ -101,7 +101,8 @@ panel --send(page context)--> Roy --frames(reply)--> panel
 
 ```bash
 # Roy (the agent) must be reachable at ROY_ORIGIN (see lib/roy/session.ts).
-# Run freehire-agent locally; roy-gateway defaults to 127.0.0.1:8787.
+# Run freehire-agent locally: `roy management` (ROY_MANAGEMENT_ADDR, default
+# 127.0.0.1:8079) serves /sessions + /ws. Its ROY_JWT_SECRET must match hire's.
 
 cd extension && npm install          # runs `wxt prepare` (generates .wxt/)
 cd extension && npm run dev          # dev build with HMR

@@ -4,9 +4,10 @@
 // subprotocol (see client.ts). The httpOnly cookie the web app uses is invisible
 // to extension code, so it is never relied on here.
 
-/** Where Roy runs in dev. Point at your local Roy (roy-gateway defaults to
- *  127.0.0.1:8787). One origin serves both the HTTP API and, ws-swapped, `/ws`. */
-export const ROY_ORIGIN = 'http://localhost:8787';
+/** Where Roy runs in dev. Point at your local Roy — the `roy management` server
+ *  (`ROY_MANAGEMENT_ADDR`, default 127.0.0.1:8079) serves both the HTTP API and,
+ *  ws-swapped, `/ws`. */
+export const ROY_ORIGIN = 'http://localhost:8079';
 
 /** Roy's WebSocket URL, derived from the same origin as the HTTP calls. */
 export function royWsUrl(): string {
