@@ -75,6 +75,12 @@
     }
   }
 
+  async function loadCatalog(slug: string, token: string) {
+    const [job, m] = await Promise.all([getJob(slug, token), getMatch(slug, token)]);
+    matchJob = job;
+    match = m;
+  }
+
   async function loadMatch() {
     const token = await getToken();
     if (!token) {
@@ -85,38 +91,34 @@
     }
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
     const url = tab?.url ?? '';
-    const slug = freehireSlugFromUrl(url);
 
     matchStatus = 'loading';
     matchError = '';
     try {
-      if (slug) {
-        // Freehire job page: use the curated catalog skills.
-        const [job, m] = await Promise.all([getJob(slug, token), getMatch(slug, token)]);
-        matchJob = job;
-        match = m;
+      // Freehire's own job page → curated slug directly.
+      const directSlug = freehireSlugFromUrl(url);
+      if (directSlug) {
+        await loadCatalog(directSlug, token);
+        matchStatus = 'ready';
+        return;
+      }
+
+      // Any other page: read it, try to recognise it as a catalog job (curated
+      // card), else match against the scraped posting text.
+      const snap = await readSnapshot();
+      const headline = snap?.headline || snap?.title || '';
+      const { company, title } = guessJobIdentity(url, headline);
+      const catalogSlug = company && title ? await findJob(company, title, token) : null;
+
+      if (catalogSlug) {
+        await loadCatalog(catalogSlug, token);
+      } else if (snap?.text) {
+        const t = headline || 'This page';
+        match = await getMatchText(t, snap.text, token);
+        matchJob = { public_slug: '', title: t, company: hostOf(url), location: '' };
       } else {
-        const snap = await readSnapshot();
-        const headline = snap?.headline || snap?.title || '';
-
-        // First: is this posting already in the freehire catalog? If so, use the
-        // curated card (skills, requirements) — recognising "this is that job".
-        const { company, title } = guessJobIdentity(url, headline);
-        const catalogSlug = company && title ? await findJob(company, title, token) : null;
-
-        if (catalogSlug) {
-          const [job, m] = await Promise.all([getJob(catalogSlug, token), getMatch(catalogSlug, token)]);
-          matchJob = job;
-          match = m;
-        } else if (snap?.text) {
-          // Fallback: match against the scraped posting text.
-          const t = headline || 'This page';
-          match = await getMatchText(t, snap.text, token);
-          matchJob = { public_slug: '', title: t, company: hostOf(url), location: '' };
-        } else {
-          matchStatus = 'empty';
-          return;
-        }
+        matchStatus = 'empty';
+        return;
       }
       matchStatus = 'ready';
     } catch (err) {
