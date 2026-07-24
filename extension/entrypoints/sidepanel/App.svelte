@@ -46,7 +46,23 @@
       if (event) messages.push({ role: 'assistant', text: event.text });
     });
     void restoreSession();
-    return () => socket?.close();
+
+    // Re-run the match when the user switches tabs or a page finishes loading,
+    // so the card tracks whatever job page is in front — like the reference.
+    const refresh = () => {
+      if (user) void loadMatch();
+    };
+    browser.tabs.onActivated.addListener(refresh);
+    const onUpdated = (_id: number, info: { status?: string }) => {
+      if (info.status === 'complete') refresh();
+    };
+    browser.tabs.onUpdated.addListener(onUpdated);
+
+    return () => {
+      socket?.close();
+      browser.tabs.onActivated.removeListener(refresh);
+      browser.tabs.onUpdated.removeListener(onUpdated);
+    };
   });
 
   async function restoreSession() {
@@ -96,15 +112,21 @@
     }
   }
 
-  async function readSnapshot(): Promise<PageSnapshot | null> {
-    try {
-      const reply = (await browser.runtime.sendMessage({
-        kind: 'GET_PAGE_SNAPSHOT',
-      } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-      return reply?.kind === 'PAGE_SNAPSHOT' ? reply.snapshot : null;
-    } catch {
-      return null;
+  async function readSnapshot(retries = 4): Promise<PageSnapshot | null> {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const reply = (await browser.runtime.sendMessage({
+          kind: 'GET_PAGE_SNAPSHOT',
+        } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
+        if (reply?.kind === 'PAGE_SNAPSHOT' && reply.snapshot.text) {
+          return reply.snapshot;
+        }
+      } catch {
+        // Content script not ready yet (e.g. just after an extension reload).
+      }
+      await new Promise((r) => setTimeout(r, 300));
     }
+    return null;
   }
 
   function hostOf(url: string): string {
