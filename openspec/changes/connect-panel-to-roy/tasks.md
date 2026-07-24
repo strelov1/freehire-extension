@@ -1,15 +1,15 @@
 ## 1. Backend auth (freehire-agent, sibling repo)
 
-- [ ] 1.1 `require_user` (`crates/roy-management/src/auth.rs`): accept `Authorization: Bearer <jwt>` as a fallback when no valid cookie is present, verifying via `jwt::verify_session` + `secret_from_env`; add a unit test (valid bearer resolves the user; bad bearer → 401; cookie path unchanged)
-- [ ] 1.2 `ws_handler` (`crates/roy-management/src/ws.rs`): fall back to `roy_auth::verify_ws_protocol` when the cookie is absent, and upgrade with `ws.protocols(["roy-jwt"])` so the marker is echoed; add unit tests (valid `roy-jwt,<jwt>` subprotocol upgrades and selects `roy-jwt`; missing marker / bad token → 401; cookie path still works)
-- [ ] 1.3 `cargo test` + `cargo clippy` green for `freehire-agent`
+- [x] 1.1 `require_user` (`crates/roy-management/src/auth.rs`): accept `Authorization: Bearer <jwt>` as a fallback when no valid cookie is present, verifying via `jwt::verify_session` + `secret_from_env`; add a unit test (valid bearer resolves the user; bad bearer → 401; cookie path unchanged)
+- [x] 1.2 `ws_handler` (`crates/roy-management/src/ws.rs`): fall back to `roy_auth::verify_ws_protocol` when the cookie is absent, and upgrade with `ws.protocols(["roy-jwt"])` so the marker is echoed; add unit tests (valid `roy-jwt,<jwt>` subprotocol upgrades and selects `roy-jwt`; missing marker / bad token → 401; cookie path still works)
+- [x] 1.3 `cargo test` + `cargo clippy` green for `freehire-agent`
 
 ## 2. Extension protocol client (port from web/src/lib/assistant)
 
-- [ ] 2.1 `extension/lib/roy/wire.ts`: `ClientCommand` / `ServerEvent` / `TurnEvent` / `JournalEntry` types (types-only copy; verified by svelte-check)
-- [ ] 2.2 `extension/lib/roy/chat.ts`: `reduceTurnEvent` + `ChatState`/`ChatMessage`; port `chat.test.ts`
-- [ ] 2.3 `extension/lib/roy/client.ts`: `RoyClient` (`call`/`fire`/`subscribeFrames`/`onStatus`/`onError`), `connect(url, token)` opening `new WebSocket(url, ['roy-jwt', token])`; `client.test.ts` with a fake `WebSocket` (asserts offered subprotocols, FIFO `call` matching, frame dispatch, unsolicited-error routing)
-- [ ] 2.4 `extension/lib/roy/session.ts`: `createSession(token)` (Bearer, empty body, parse `session_id`) + `royWsUrl()`; `ROY_ORIGIN` constant next to `HIRE_ORIGIN`; `session.test.ts` with mocked `fetch`
+- [x] 2.1 `extension/lib/roy/wire.ts`: `ClientCommand` / `ServerEvent` / `TurnEvent` / `JournalEntry` types (types-only copy; verified by svelte-check)
+- [x] 2.2 `extension/lib/roy/chat.ts`: `reduceTurnEvent` + `ChatState`/`ChatMessage`; port `chat.test.ts`
+- [x] 2.3 `extension/lib/roy/client.ts`: `RoyClient` (`call`/`fire`/`subscribeFrames`/`onStatus`/`onError`), `connect(url, token)` opening `new WebSocket(url, ['roy-jwt', token])`; `client.test.ts` with a fake `WebSocket` (asserts offered subprotocols, FIFO `call` matching, frame dispatch, unsolicited-error routing)
+- [x] 2.4 `extension/lib/roy/session.ts`: `createSession(token)` (Bearer, empty body, parse `session_id`) + `royWsUrl()`; `ROY_ORIGIN` constant (in `roy/session.ts`); `session.test.ts` with mocked `fetch`
 
 ## 3. Panel wiring (App.svelte)
 

@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { browser } from 'wxt/browser';
-  import {
-    parseServerEvent,
-    type ClientEvent,
-    type RuntimeMessage,
-    type PageSnapshot,
-  } from '../../lib/protocol';
+  import { type RuntimeMessage, type PageSnapshot } from '../../lib/protocol';
+  import { RoyClient, type ServerError } from '../../lib/roy/client';
+  import { createSession, royWsUrl } from '../../lib/roy/session';
+  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/roy/chat';
+  import type { TurnEvent } from '../../lib/roy/wire';
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
@@ -23,14 +22,23 @@
   import { matchFieldKey } from '../../lib/form';
   import MatchCard from './MatchCard.svelte';
 
-  const SERVER_URL = 'ws://localhost:3899/ws';
-
-  type ChatMessage = { role: 'user' | 'assistant' | 'system'; text: string };
-
-  let messages = $state<ChatMessage[]>([]);
+  let chat = $state<ChatState>(initChat());
+  // Local action feedback (autofill results, errors) — not part of a Roy turn.
+  let notices = $state<string[]>([]);
   let draft = $state('');
   let connected = $state(false);
-  let socket: WebSocket | null = null;
+  let sending = $state(false);
+  let chatError = $state('');
+
+  // Roy transport — plain (non-reactive) refs; nothing here is rendered directly.
+  let client: RoyClient | null = null;
+  let sessionId: string | null = null;
+  let attached = false;
+  let inputAcquired = false;
+  // The optimistic user message we already painted; suppress Roy's echoed
+  // `user_prompt` frame that matches it (see onFrame).
+  let pendingEcho: string | null = null;
+  let frameUnsub: (() => void) | null = null;
 
   let user = $state<HireUser | null>(null);
   let authBusy = $state(false);
@@ -43,13 +51,8 @@
   let matchError = $state('');
 
   onMount(() => {
-    socket = new WebSocket(SERVER_URL);
-    socket.addEventListener('open', () => (connected = true));
-    socket.addEventListener('close', () => (connected = false));
-    socket.addEventListener('message', (e) => {
-      const event = parseServerEvent(JSON.parse(e.data));
-      if (event) messages.push({ role: 'assistant', text: event.text });
-    });
+    // The Roy connection + session are created lazily on the first message
+    // (see dispatch → ensureConnected), so an idle panel spawns no agent.
     void restoreSession();
 
     // Re-run the match when the user switches tabs or a page finishes loading,
@@ -64,7 +67,8 @@
     browser.tabs.onUpdated.addListener(onUpdated);
 
     return () => {
-      socket?.close();
+      frameUnsub?.();
+      client?.close();
       browser.tabs.onActivated.removeListener(refresh);
       browser.tabs.onUpdated.removeListener(onUpdated);
     };
@@ -175,16 +179,88 @@
     user = null;
   }
 
-  function send(event: ClientEvent) {
-    socket?.send(JSON.stringify(event));
+  // Connect to Roy and attach to a (lazily created) session. Idempotent: safe to
+  // call before every dispatch.
+  async function ensureConnected(token: string) {
+    if (!client) {
+      client = new RoyClient();
+      client.onStatus((s) => (connected = s === 'open'));
+      // A turn that ends with an `error` event (agent crash, tool failure)
+      // instead of a terminal `result` would otherwise hang the turn forever.
+      client.onError((e: ServerError) => {
+        chatError = `The agent hit an error: ${e.message}`;
+        endTurn();
+      });
+      await client.connect(royWsUrl(), token);
+    }
+    if (!sessionId) sessionId = await createSession(token);
+    if (!attached) {
+      // Subscribe BEFORE attaching so the `from_seq: 0` replay frames are caught.
+      frameUnsub = client.subscribeFrames(sessionId, (entry) => onFrame(entry.event));
+      await client.call({ op: 'attach', session: sessionId, from_seq: 0 }, 'attached');
+      attached = true;
+    }
+  }
+
+  function onFrame(event: TurnEvent) {
+    // Suppress the echoed user_prompt for a message we already showed optimistically.
+    if (event.type === 'user_prompt' && pendingEcho !== null && event.text === pendingEcho) {
+      pendingEcho = null;
+      return;
+    }
+    chat = reduceTurnEvent(chat, event);
+    if (event.type === 'result') endTurn();
+  }
+
+  function endTurn() {
+    sending = false;
+    if (client && sessionId && inputAcquired) {
+      inputAcquired = false;
+      void client
+        .call({ op: 'release_input', session: sessionId }, 'input_released')
+        .catch(() => {});
+    }
+  }
+
+  // Acquire the input lease, paint the user message optimistically (`displayText`
+  // may be a short label while `sendText` carries fuller context), and fire the
+  // prompt. `pendingEcho` is the SENT text so Roy's echoed frame is suppressed.
+  async function dispatch(sendText: string, displayText = sendText) {
+    if (sending) return;
+    const token = await getToken();
+    if (!token) {
+      chatError = 'Sign in to chat with the agent.';
+      return;
+    }
+    sending = true;
+    chatError = '';
+    try {
+      await ensureConnected(token);
+      const id = sessionId!;
+      if (!inputAcquired) {
+        const acquired = await client!.call({ op: 'acquire_input', session: id }, 'input_acquired');
+        if (!acquired.acquired) {
+          sending = false;
+          chatError = 'The agent is busy (open in another tab?). Try again in a moment.';
+          return;
+        }
+        inputAcquired = true;
+      }
+      pendingEcho = sendText;
+      chat = reduceTurnEvent(chat, { type: 'user_prompt', text: displayText });
+      client!.fire({ op: 'send', session: id, text: sendText });
+    } catch (err) {
+      sending = false;
+      inputAcquired = false;
+      chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+    }
   }
 
   function sendMessage() {
     const text = draft.trim();
-    if (!text || !connected) return;
-    messages.push({ role: 'user', text });
-    send({ type: 'user_message', text });
+    if (!text || sending) return;
     draft = '';
+    void dispatch(text);
   }
 
   let autofilling = $state(false);
@@ -212,7 +288,7 @@
         kind: 'GET_FORM',
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
       if (formReply?.kind !== 'FORM' || formReply.fields.length === 0) {
-        messages.push({ role: 'system', text: 'No form fields found on this page.' });
+        notices.push('No form fields found on this page.');
         return;
       }
       const values = profileToValues(await getAutofillProfile(token));
@@ -222,7 +298,7 @@
         return key && value ? [{ index: f.index, value }] : [];
       });
       if (fills.length === 0) {
-        messages.push({ role: 'system', text: 'Nothing matched your profile on this form.' });
+        notices.push('Nothing matched your profile on this form.');
         return;
       }
       const applied = (await browser.runtime.sendMessage({
@@ -230,9 +306,9 @@
         fills,
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
       const n = applied?.kind === 'FILLS_APPLIED' ? applied.written : 0;
-      messages.push({ role: 'system', text: `✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.` });
+      notices.push(`✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.`);
     } catch (err) {
-      messages.push({ role: 'system', text: `Autofill failed: ${err instanceof Error ? err.message : 'error'}` });
+      notices.push(`Autofill failed: ${err instanceof Error ? err.message : 'error'}`);
     } finally {
       autofilling = false;
     }
@@ -245,11 +321,11 @@
 
     if (reply?.kind !== 'PAGE_SNAPSHOT') return;
     const { snapshot } = reply;
-    messages.push({
-      role: 'system',
-      text: `📄 ${snapshot.headline || snapshot.title || snapshot.url}`,
-    });
-    send({ type: 'page_context', snapshot });
+    const headline = snapshot.headline || snapshot.title || snapshot.url || 'this page';
+    // Send the page to Roy as context, but paint a compact bubble (not the full
+    // page text) for the optimistic user message.
+    const context = `Here is the page I'm looking at:\n\nTitle: ${snapshot.title}\nURL: ${snapshot.url}\n\n${snapshot.text}`;
+    void dispatch(context, `📄 Read page: ${headline}`);
   }
 </script>
 
@@ -258,7 +334,7 @@
     <div class="top">
       <strong>freehire</strong>
       <span class="status" class:online={connected}>
-        {connected ? 'connected' : 'offline'}
+        {connected ? 'connected' : user ? 'ready' : 'offline'}
       </span>
     </div>
     <div class="auth">
@@ -295,11 +371,21 @@
   {/if}
 
   <div class="messages">
-    {#each messages as message}
-      <div class="message {message.role}">{message.text}</div>
+    {#each chat.messages as message}
+      <div class="message {message.role}" class:errored={message.errored}>
+        {message.text}{#if message.streaming && !message.text}<span class="dots">…</span>{/if}
+      </div>
     {/each}
-    {#if messages.length === 0}
-      <p class="empty">Read the current page or say something to start.</p>
+    {#each notices as notice}
+      <div class="message system">{notice}</div>
+    {/each}
+    {#if chatError}
+      <div class="message system err">{chatError}</div>
+    {/if}
+    {#if chat.messages.length === 0 && notices.length === 0}
+      <p class="empty">
+        {user ? 'Read the current page or say something to start.' : 'Sign in to chat with the agent.'}
+      </p>
     {/if}
   </div>
 
@@ -309,13 +395,14 @@
         {autofilling ? 'Filling…' : 'Autofill'}
       </button>
     {/if}
-    <button class="ghost" onclick={readPage}>Read page</button>
+    <button class="ghost" onclick={readPage} disabled={!user || sending}>Read page</button>
     <input
-      placeholder="Message the agent…"
+      placeholder={user ? 'Message the agent…' : 'Sign in to chat'}
       bind:value={draft}
+      disabled={!user || sending}
       onkeydown={(e) => e.key === 'Enter' && sendMessage()}
     />
-    <button onclick={sendMessage} disabled={!connected}>Send</button>
+    <button onclick={sendMessage} disabled={!user || sending}>Send</button>
   </div>
 </div>
 
@@ -450,6 +537,19 @@
     background: #fff7d6;
     font-size: 12px;
     color: #7a6a1f;
+  }
+
+  .message.system.err {
+    background: #fdeceb;
+    color: #b42318;
+  }
+
+  .message.assistant.errored {
+    border: 1px solid #f3b0aa;
+  }
+
+  .dots {
+    opacity: 0.5;
   }
 
   .composer {

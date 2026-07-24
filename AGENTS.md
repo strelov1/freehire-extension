@@ -23,15 +23,17 @@ Non-negotiable. Bias toward caution over speed; use judgment on trivial tasks.
 
 A browser extension that puts a job-application **agent in a side panel** — a
 Claude/Gemini-style side bar with access to whatever page the user is on. The
-agent's brain lives behind a local server; that server is meant to bridge to the
-existing [`freehire-agent`](../freehire-agent) (Roy) later. This repo is the
-browser surface plus the server seam.
+agent is [`freehire-agent`](../freehire-agent) (Roy): the side panel creates a
+Roy session and streams the turn over Roy's own control protocol.
 
-**Current state: scaffolding.** The wiring is real end-to-end; the "agent" is a
-mock echo. No real agent, auth, profile context, or form-filling yet — those are
-follow-up specs (tracked in OpenSpec from the next one on).
+**Current state: the chat is wired to Roy.** Sign in with freehire, then talk to
+the agent; "Read page" hands the current page to it. Auth crosses origins with
+the session JWT (`Authorization: Bearer` on the HTTP API, the `roy-jwt` WebSocket
+subprotocol on `/ws`). A profile-aware match card and deterministic Autofill also
+ship.
 
-Stack: **WXT + Svelte** (Chrome MV3), **Rust + axum** WebSocket server.
+Stack: **WXT + Svelte** (Chrome MV3). No local server — the panel talks to Roy
+directly.
 
 ## Layout
 
@@ -40,64 +42,71 @@ extension/            WXT + Svelte MV3 extension
   entrypoints/
     background.ts     service worker: opens the panel, relays panel <-> content
     content.ts        injected everywhere; reads the page into a PageSnapshot
-    sidepanel/        Svelte chat app (owns the WebSocket to the server)
-      App.svelte      chat UI + "Read page" + WebSocket lifecycle
+    sidepanel/        Svelte chat app (owns the Roy WebSocket)
+      App.svelte      chat UI + match card + "Read page" + Autofill
+      MatchCard.svelte  profile-match card
       main.ts         Svelte 5 mount
   lib/
-    protocol.ts       single source of truth for every message shape (+ test)
+    roy/              Roy control-protocol client: wire, client (RoyClient),
+                      chat reducer, session bootstrap (+ tests). Ported from the
+                      freehire web assistant; auth diverges (Bearer + subprotocol).
+    auth.ts           "Sign in with freehire" (launchWebAuthFlow) + token storage
+    freehire.ts       hire API reads (job, match, autofill profile)
+    protocol.ts       in-extension RuntimeMessage contract (+ test)
     scraper.ts        DOM -> PageSnapshot, pure over its Document arg (+ test)
+    form.ts           form observe/map/act for Autofill (+ test)
   wxt.config.ts       manifest (permissions, side_panel, host_permissions)
-server/               Rust WebSocket stub (axum)
-  src/main.rs         ws handler + mock_reply seam (+ tests)
 ```
 
 ## Architecture
 
-Three moving parts, one contract (`extension/lib/protocol.ts`):
-
-- **Side panel** (Svelte) owns the WebSocket. It's the only context that stays
-  alive while open — unlike the MV3 service worker, which Chrome kills when idle,
-  so it must not hold the durable socket.
+- **Side panel** (Svelte) owns the Roy WebSocket. It's the only context that
+  stays alive while open — unlike the MV3 service worker, which Chrome kills when
+  idle, so it must not hold the durable socket.
 - **Content script** reads the live DOM on request. It holds no state.
 - **Background** is a thin relay: the panel can't message a content script
   directly, so background forwards a snapshot request to the active tab.
+
+The chat talks to Roy directly over its `ClientCommand`/`ServerEvent` control
+protocol (`lib/roy/`): create a session (`POST /sessions`), connect the
+WebSocket, then `attach` → `acquire_input` → `send`, folding the streamed
+`TurnEvent`s into the message list. Auth is the session JWT the connect flow
+minted — `Authorization: Bearer` on the HTTP API, the `roy-jwt` WebSocket
+subprotocol on `/ws` (the httpOnly cookie the web app relies on is invisible to
+extension code).
 
 Read-a-page flow:
 
 ```
 panel --GET_PAGE_SNAPSHOT--> background --(active tab)--> content
-content --PAGE_SNAPSHOT--> background --> panel --page_context(ws)--> server
-server --assistant_message(ws)--> panel
+content --PAGE_SNAPSHOT--> background --> panel
+panel --send(page context)--> Roy --frames(reply)--> panel
 ```
 
 ## Conventions
 
-- **`protocol.ts` is the contract.** Two transports live there on purpose:
-  `RuntimeMessage` (inside the extension, discriminated by `kind`) and
-  `ClientEvent`/`ServerEvent` (over the WebSocket, discriminated by `type`).
-  Different discriminant keys are deliberate — two channels, two lifecycles.
-- **The server mirrors only the WebSocket half** via serde (`#[serde(tag =
-  "type")]`). Keep the Rust enums in lockstep with the TS types.
-- **The agent seam is `mock_reply`** in `server/src/main.rs`. Replace its body to
-  bridge to Roy; the wire contract does not move.
-- **Test the logic, not the transport.** `scraper` and `protocol` are pure and
-  tested (vitest); `mock_reply` is pure and tested (cargo). The axum ws handler
-  and the chrome message plumbing are thin glue — left uncovered on purpose.
+- **`protocol.ts` is the in-extension contract** — `RuntimeMessage`
+  (panel <-> background <-> content, discriminated by `kind`). The chat's wire is
+  NOT here; it lives in `lib/roy/wire.ts`, mirroring Roy's protocol.
+- **`lib/roy/` mirrors the freehire web assistant** (`web/src/lib/assistant` in
+  the hire repo). wire/client/chat are thin ports; the one divergence is auth
+  (subprotocol + Bearer instead of the web's cookie). Keep them aligned.
+- **Test the logic, not the transport.** `scraper`, `form`, `protocol`, and the
+  `roy` client/reducer are pure and tested (vitest); the chrome message plumbing
+  and the live socket are thin glue.
 - **TypeScript stays on 5.x** — svelte-check does not yet support the native
   `typescript@7` (tsgo).
 
 ## Commands
 
 ```bash
-# Rust WS server (ws://localhost:3899/ws)
-cd server && cargo run
-cd server && cargo test
+# Roy (the agent) must be reachable at ROY_ORIGIN (see lib/roy/session.ts).
+# Run freehire-agent locally; roy-gateway defaults to 127.0.0.1:8787.
 
-# Extension
 cd extension && npm install          # runs `wxt prepare` (generates .wxt/)
 cd extension && npm run dev          # dev build with HMR
 cd extension && npm run build        # production build -> .output/chrome-mv3
-cd extension && npm test             # vitest: scraper + protocol
+cd extension && npm test             # vitest: scraper + protocol + form + roy
 cd extension && npm run check        # svelte-check
 ```
 
