@@ -108,6 +108,23 @@ export function getMatchText(title: string, text: string, token: string): Promis
   return postData<JobMatch>('/api/v1/me/match-text', { title, text }, token);
 }
 
+/** Canonical autofill fields freehire assembles from the user's CV + account. */
+export interface AutofillProfile {
+  full_name: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string;
+  location: string;
+  linkedin: string;
+  github: string;
+  portfolio: string;
+}
+
+export function getAutofillProfile(token: string): Promise<AutofillProfile> {
+  return getData<AutofillProfile>('/api/v1/me/autofill-profile', token);
+}
+
 /** Resolves a posting to a freehire catalog slug by company + title, or null. */
 export async function findJob(company: string, title: string, token: string): Promise<string | null> {
   const q = `company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;

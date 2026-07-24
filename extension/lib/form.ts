@@ -7,21 +7,7 @@
  * shipping DOM nodes across the content↔panel boundary.
  */
 
-export type FieldTag = 'input' | 'select' | 'textarea';
-
-/** A serialisable view of one fillable form control. */
-export interface FormField {
-  index: number;
-  tag: FieldTag;
-  /** The input's `type`, or the tag for select/textarea. */
-  type: string;
-  label: string;
-  name: string;
-  required: boolean;
-  value: string;
-  /** Visible option labels, for a <select>. */
-  options?: string[];
-}
+import type { FieldTag, FormField, Fill } from './protocol';
 
 type Fillable = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
@@ -108,12 +94,6 @@ export function matchFieldKey(label: string): string | null {
     if (synonyms.some((s) => normalized === s || normalized.includes(s))) return key;
   }
   return null;
-}
-
-/** A value to write into the control at `index`. */
-export interface Fill {
-  index: number;
-  value: string;
 }
 
 /** Applies fills by index, returning how many controls were written. */

@@ -1,22 +1,34 @@
 import { extractSnapshot } from '../lib/scraper';
+import { extractForm, applyFills } from '../lib/form';
 import type { RuntimeMessage } from '../lib/protocol';
 
 /**
- * Injected into every page. It owns no state — it just answers a snapshot
- * request with a read of the live document.
+ * Injected into every page. The extension's eyes + hands: it reads the page
+ * (snapshot, form) and writes fills back. Owns no state.
  */
 export default defineContentScript({
   matches: ['<all_urls>'],
   main() {
     browser.runtime.onMessage.addListener((message: RuntimeMessage) => {
-      if (message.kind === 'GET_PAGE_SNAPSHOT') {
-        const reply: RuntimeMessage = {
-          kind: 'PAGE_SNAPSHOT',
-          snapshot: extractSnapshot(document),
-        };
-        return Promise.resolve(reply);
+      switch (message.kind) {
+        case 'GET_PAGE_SNAPSHOT':
+          return Promise.resolve<RuntimeMessage>({
+            kind: 'PAGE_SNAPSHOT',
+            snapshot: extractSnapshot(document),
+          });
+        case 'GET_FORM':
+          return Promise.resolve<RuntimeMessage>({
+            kind: 'FORM',
+            fields: extractForm(document),
+          });
+        case 'APPLY_FILLS':
+          return Promise.resolve<RuntimeMessage>({
+            kind: 'FILLS_APPLIED',
+            written: applyFills(document, message.fills),
+          });
+        default:
+          return undefined;
       }
-      return undefined;
     });
   },
 });

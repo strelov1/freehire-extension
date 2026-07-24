@@ -15,9 +15,12 @@
     getJob,
     getMatch,
     getMatchText,
+    getAutofillProfile,
     type FreehireJob,
     type JobMatch,
+    type AutofillProfile,
   } from '../../lib/freehire';
+  import { matchFieldKey } from '../../lib/form';
   import MatchCard from './MatchCard.svelte';
 
   const SERVER_URL = 'ws://localhost:3899/ws';
@@ -184,6 +187,57 @@
     draft = '';
   }
 
+  let autofilling = $state(false);
+
+  function profileToValues(p: AutofillProfile): Record<string, string> {
+    return {
+      fullName: p.full_name,
+      firstName: p.first_name,
+      lastName: p.last_name,
+      email: p.email,
+      phone: p.phone,
+      city: p.location,
+      linkedin: p.linkedin,
+      github: p.github,
+      portfolio: p.portfolio,
+    };
+  }
+
+  async function autofill() {
+    const token = await getToken();
+    if (!token || autofilling) return;
+    autofilling = true;
+    try {
+      const formReply = (await browser.runtime.sendMessage({
+        kind: 'GET_FORM',
+      } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
+      if (formReply?.kind !== 'FORM' || formReply.fields.length === 0) {
+        messages.push({ role: 'system', text: 'No form fields found on this page.' });
+        return;
+      }
+      const values = profileToValues(await getAutofillProfile(token));
+      const fills = formReply.fields.flatMap((f) => {
+        const key = matchFieldKey(f.label);
+        const value = key ? values[key] : '';
+        return key && value ? [{ index: f.index, value }] : [];
+      });
+      if (fills.length === 0) {
+        messages.push({ role: 'system', text: 'Nothing matched your profile on this form.' });
+        return;
+      }
+      const applied = (await browser.runtime.sendMessage({
+        kind: 'APPLY_FILLS',
+        fills,
+      } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
+      const n = applied?.kind === 'FILLS_APPLIED' ? applied.written : 0;
+      messages.push({ role: 'system', text: `✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.` });
+    } catch (err) {
+      messages.push({ role: 'system', text: `Autofill failed: ${err instanceof Error ? err.message : 'error'}` });
+    } finally {
+      autofilling = false;
+    }
+  }
+
   async function readPage() {
     const reply = (await browser.runtime.sendMessage({
       kind: 'GET_PAGE_SNAPSHOT',
@@ -250,6 +304,11 @@
   </div>
 
   <div class="composer">
+    {#if user}
+      <button class="ghost" onclick={autofill} disabled={autofilling}>
+        {autofilling ? 'Filling…' : 'Autofill'}
+      </button>
+    {/if}
     <button class="ghost" onclick={readPage}>Read page</button>
     <input
       placeholder="Message the agent…"

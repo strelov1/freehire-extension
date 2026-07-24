@@ -20,10 +20,34 @@ export interface PageSnapshot {
   text: string;
 }
 
+export type FieldTag = 'input' | 'select' | 'textarea';
+
+/** A serialisable view of one fillable form control (see lib/form.ts). */
+export interface FormField {
+  index: number;
+  tag: FieldTag;
+  type: string;
+  label: string;
+  name: string;
+  required: boolean;
+  value: string;
+  options?: string[];
+}
+
+/** A value to write into the control at `index`. */
+export interface Fill {
+  index: number;
+  value: string;
+}
+
 /** Messages passed inside the extension via chrome.runtime. */
 export type RuntimeMessage =
   | { kind: 'GET_PAGE_SNAPSHOT' }
-  | { kind: 'PAGE_SNAPSHOT'; snapshot: PageSnapshot };
+  | { kind: 'PAGE_SNAPSHOT'; snapshot: PageSnapshot }
+  | { kind: 'GET_FORM' }
+  | { kind: 'FORM'; fields: FormField[] }
+  | { kind: 'APPLY_FILLS'; fills: Fill[] }
+  | { kind: 'FILLS_APPLIED'; written: number };
 
 /** Envelopes the panel sends to the server over the WebSocket. */
 export type ClientEvent =

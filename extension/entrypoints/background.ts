@@ -11,20 +11,23 @@ export default defineBackground(() => {
     ?.setPanelBehavior({ openPanelOnActionClick: true })
     .catch((err) => console.error('setPanelBehavior failed', err));
 
+  // Relay panel requests to the active tab's content script (the panel can't
+  // message a content script directly).
   browser.runtime.onMessage.addListener((message: RuntimeMessage) => {
-    if (message.kind === 'GET_PAGE_SNAPSHOT') {
-      return requestSnapshotFromActiveTab();
+    if (message.kind === 'GET_PAGE_SNAPSHOT' || message.kind === 'GET_FORM' || message.kind === 'APPLY_FILLS') {
+      return relayToActiveTab(message);
     }
     return undefined;
   });
 });
 
-async function requestSnapshotFromActiveTab(): Promise<RuntimeMessage> {
+async function relayToActiveTab(message: RuntimeMessage): Promise<RuntimeMessage | undefined> {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   if (tab?.id == null) {
-    return { kind: 'PAGE_SNAPSHOT', snapshot: emptySnapshot() };
+    // Only the snapshot request has a meaningful empty reply.
+    return message.kind === 'GET_PAGE_SNAPSHOT'
+      ? { kind: 'PAGE_SNAPSHOT', snapshot: emptySnapshot() }
+      : undefined;
   }
-  return browser.tabs.sendMessage(tab.id, {
-    kind: 'GET_PAGE_SNAPSHOT',
-  } satisfies RuntimeMessage);
+  return browser.tabs.sendMessage(tab.id, message);
 }
