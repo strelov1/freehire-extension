@@ -10,6 +10,8 @@
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
+    guessJobIdentity,
+    findJob,
     getJob,
     getMatch,
     getMatchText,
@@ -94,16 +96,27 @@
         matchJob = job;
         match = m;
       } else {
-        // Any other page: match against the scraped posting text.
         const snap = await readSnapshot();
-        const text = snap?.text ?? '';
-        if (!text) {
+        const headline = snap?.headline || snap?.title || '';
+
+        // First: is this posting already in the freehire catalog? If so, use the
+        // curated card (skills, requirements) — recognising "this is that job".
+        const { company, title } = guessJobIdentity(url, headline);
+        const catalogSlug = company && title ? await findJob(company, title, token) : null;
+
+        if (catalogSlug) {
+          const [job, m] = await Promise.all([getJob(catalogSlug, token), getMatch(catalogSlug, token)]);
+          matchJob = job;
+          match = m;
+        } else if (snap?.text) {
+          // Fallback: match against the scraped posting text.
+          const t = headline || 'This page';
+          match = await getMatchText(t, snap.text, token);
+          matchJob = { public_slug: '', title: t, company: hostOf(url), location: '' };
+        } else {
           matchStatus = 'empty';
           return;
         }
-        const title = snap?.headline || snap?.title || 'This page';
-        match = await getMatchText(title, text, token);
-        matchJob = { public_slug: '', title, company: hostOf(url), location: '' };
       }
       matchStatus = 'ready';
     } catch (err) {

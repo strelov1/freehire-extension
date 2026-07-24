@@ -19,6 +19,33 @@ export function freehireSlugFromUrl(rawUrl: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * Best-effort (company, title) for an arbitrary job page, used to look the
+ * posting up in the freehire catalog. Pure. Company comes from a greenhouse
+ * `?for=` hint or a "<title> at <Company>" headline; title strips common apply
+ * prefixes and the trailing "at <Company>".
+ */
+export function guessJobIdentity(
+  rawUrl: string,
+  headline: string,
+): { company: string; title: string } {
+  let company = '';
+  try {
+    company = new URL(rawUrl).searchParams.get('for') ?? '';
+  } catch {
+    // ignore unparseable URL
+  }
+
+  let title = (headline ?? '').trim();
+  title = title.replace(/^(job application for|application for|apply (?:for|to))\s+/i, '');
+  const at = title.match(/^(.*?)\s+at\s+(.+)$/i);
+  if (at) {
+    title = at[1].trim();
+    if (!company) company = at[2].trim();
+  }
+  return { company: company.trim(), title: title.trim() };
+}
+
 /** The slice of a freehire job the card renders. */
 export interface FreehireJob {
   public_slug: string;
@@ -73,4 +100,11 @@ export function getMatch(slug: string, token: string): Promise<JobMatch> {
  */
 export function getMatchText(title: string, text: string, token: string): Promise<JobMatch> {
   return postData<JobMatch>('/api/v1/me/match-text', { title, text }, token);
+}
+
+/** Resolves a posting to a freehire catalog slug by company + title, or null. */
+export async function findJob(company: string, title: string, token: string): Promise<string | null> {
+  const q = `company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;
+  const found = await getData<{ public_slug: string } | null>(`/api/v1/jobs/find?${q}`, token);
+  return found?.public_slug ?? null;
 }
