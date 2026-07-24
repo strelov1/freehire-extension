@@ -46,6 +46,12 @@ export function guessJobIdentity(
   return { company: company.trim(), title: title.trim() };
 }
 
+/** freehire's company-logo proxy URL for a company name (404s → placeholder). */
+export function companyLogoUrl(company: string): string | null {
+  const c = company.trim();
+  return c ? `https://logo.freehire.dev/${encodeURIComponent(c)}` : null;
+}
+
 /** The slice of a freehire job the card renders. */
 export interface FreehireJob {
   public_slug: string;

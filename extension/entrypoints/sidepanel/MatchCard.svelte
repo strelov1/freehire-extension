@@ -1,16 +1,30 @@
 <script lang="ts">
-  import type { FreehireJob, JobMatch } from '../../lib/freehire';
+  import { companyLogoUrl, type FreehireJob, type JobMatch } from '../../lib/freehire';
 
   let { job, match }: { job: FreehireJob; match: JobMatch } = $props();
 
   let pct = $derived(Math.max(0, Math.min(100, match.coverage_percent)));
   let color = $derived(pct >= 70 ? '#4d7c0f' : pct >= 40 ? '#a16207' : '#b42318');
+  let logoUrl = $derived(companyLogoUrl(job.company));
+  let monogram = $derived((job.company || job.title || '?').trim().charAt(0).toUpperCase());
+  let logoFailed = $state(false);
 </script>
 
 <div class="card">
   <div class="job">
-    {#if job.company}<div class="company">{job.company}</div>{/if}
-    <div class="title">{job.title}</div>
+    {#key job.company}
+      <div class="logo">
+        {#if logoUrl && !logoFailed}
+          <img src={logoUrl} alt="" onerror={() => (logoFailed = true)} />
+        {:else}
+          <span class="monogram">{monogram}</span>
+        {/if}
+      </div>
+    {/key}
+    <div class="jobmeta">
+      {#if job.company}<div class="company">{job.company}</div>{/if}
+      <div class="title">{job.title}</div>
+    </div>
   </div>
 
   <div class="mrow">
@@ -47,7 +61,35 @@
     background: #fff;
   }
   .job {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin-bottom: 12px;
+  }
+  .logo {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #eee;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f7f7f8;
+  }
+  .logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .monogram {
+    font-size: 16px;
+    font-weight: 700;
+    color: #6b7280;
+  }
+  .jobmeta {
+    min-width: 0;
   }
   .company {
     font-size: 12px;
