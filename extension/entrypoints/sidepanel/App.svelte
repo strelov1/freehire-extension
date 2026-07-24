@@ -177,6 +177,12 @@
   async function handleSignOut() {
     await signOut();
     user = null;
+    // Drop the authenticated socket + session so a later sign-in never reuses
+    // the previous user's Roy session, and clear their conversation.
+    resetRoy();
+    chat = initChat();
+    notices = [];
+    chatError = '';
   }
 
   // Connect to Roy and attach to a (lazily created) session. Idempotent: safe to
@@ -184,7 +190,16 @@
   async function ensureConnected(token: string) {
     if (!client) {
       client = new RoyClient();
-      client.onStatus((s) => (connected = s === 'open'));
+      client.onStatus((s) => {
+        connected = s === 'open';
+        // A dropped socket never delivers a terminal `result`, and a `send` is
+        // fire-and-forget (nothing to reject), so unstick the turn and reset the
+        // transport. No reconnect — the next message starts a fresh session.
+        if (s === 'closed' || s === 'error') {
+          if (sending) chatError = 'Connection to the agent was lost. Try again.';
+          resetRoy();
+        }
+      });
       // A turn that ends with an `error` event (agent crash, tool failure)
       // instead of a terminal `result` would otherwise hang the turn forever.
       client.onError((e: ServerError) => {
@@ -196,10 +211,30 @@
     if (!sessionId) sessionId = await createSession(token);
     if (!attached) {
       // Subscribe BEFORE attaching so the `from_seq: 0` replay frames are caught.
-      frameUnsub = client.subscribeFrames(sessionId, (entry) => onFrame(entry.event));
+      // Guard against re-subscribing when a prior attach failed but left the sub
+      // in place — a second callback would double every frame.
+      if (!frameUnsub) {
+        frameUnsub = client.subscribeFrames(sessionId, (entry) => onFrame(entry.event));
+      }
       await client.call({ op: 'attach', session: sessionId, from_seq: 0 }, 'attached');
       attached = true;
     }
+  }
+
+  // Tear down the Roy transport. Used on sign-out and on a dropped socket so a
+  // later send reconnects cleanly (refs are nulled before close() to avoid the
+  // onclose handler re-entering this).
+  function resetRoy() {
+    const c = client;
+    frameUnsub?.();
+    frameUnsub = null;
+    client = null;
+    sessionId = null;
+    attached = false;
+    inputAcquired = false;
+    sending = false;
+    connected = false;
+    c?.close();
   }
 
   function onFrame(event: TurnEvent) {
@@ -227,13 +262,16 @@
   // prompt. `pendingEcho` is the SENT text so Roy's echoed frame is suppressed.
   async function dispatch(sendText: string, displayText = sendText) {
     if (sending) return;
+    // Claim the turn synchronously — before the first await — so a second action
+    // during `getToken()` queues out via the guard instead of double-dispatching.
+    sending = true;
+    chatError = '';
     const token = await getToken();
     if (!token) {
+      sending = false;
       chatError = 'Sign in to chat with the agent.';
       return;
     }
-    sending = true;
-    chatError = '';
     try {
       await ensureConnected(token);
       const id = sessionId!;
