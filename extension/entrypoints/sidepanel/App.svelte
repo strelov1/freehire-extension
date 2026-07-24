@@ -5,12 +5,14 @@
     parseServerEvent,
     type ClientEvent,
     type RuntimeMessage,
+    type PageSnapshot,
   } from '../../lib/protocol';
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
     getJob,
     getMatch,
+    getMatchText,
     type FreehireJob,
     type JobMatch,
   } from '../../lib/freehire';
@@ -29,7 +31,7 @@
   let authBusy = $state(false);
   let authError = $state('');
 
-  type MatchStatus = 'idle' | 'loading' | 'ready' | 'error' | 'not-a-job';
+  type MatchStatus = 'idle' | 'loading' | 'ready' | 'error' | 'empty';
   let matchStatus = $state<MatchStatus>('idle');
   let matchJob = $state<FreehireJob | null>(null);
   let match = $state<JobMatch | null>(null);
@@ -57,24 +59,59 @@
 
   async function loadMatch() {
     const token = await getToken();
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    const slug = tab?.url ? freehireSlugFromUrl(tab.url) : null;
-    if (!token || !slug) {
-      matchStatus = 'not-a-job';
+    if (!token) {
+      matchStatus = 'empty';
       matchJob = null;
       match = null;
       return;
     }
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    const url = tab?.url ?? '';
+    const slug = freehireSlugFromUrl(url);
+
     matchStatus = 'loading';
     matchError = '';
     try {
-      const [job, m] = await Promise.all([getJob(slug, token), getMatch(slug, token)]);
-      matchJob = job;
-      match = m;
+      if (slug) {
+        // Freehire job page: use the curated catalog skills.
+        const [job, m] = await Promise.all([getJob(slug, token), getMatch(slug, token)]);
+        matchJob = job;
+        match = m;
+      } else {
+        // Any other page: match against the scraped posting text.
+        const snap = await readSnapshot();
+        const text = snap?.text ?? '';
+        if (!text) {
+          matchStatus = 'empty';
+          return;
+        }
+        const title = snap?.headline || snap?.title || 'This page';
+        match = await getMatchText(title, text, token);
+        matchJob = { public_slug: '', title, company: hostOf(url), location: '' };
+      }
       matchStatus = 'ready';
     } catch (err) {
       matchError = err instanceof Error ? err.message : 'Could not load match';
       matchStatus = 'error';
+    }
+  }
+
+  async function readSnapshot(): Promise<PageSnapshot | null> {
+    try {
+      const reply = (await browser.runtime.sendMessage({
+        kind: 'GET_PAGE_SNAPSHOT',
+      } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
+      return reply?.kind === 'PAGE_SNAPSHOT' ? reply.snapshot : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return '';
     }
   }
 
@@ -154,10 +191,13 @@
     {:else if matchStatus === 'loading'}
       <p class="match-hint">Analyzing match…</p>
     {:else if matchStatus === 'error'}
-      <p class="match-hint err">Match unavailable: {matchError}</p>
-    {:else if matchStatus === 'not-a-job'}
+      <p class="match-hint err">
+        Match unavailable: {matchError}
+        <button class="link" onclick={loadMatch}>Retry</button>
+      </p>
+    {:else if matchStatus === 'empty'}
       <p class="match-hint">
-        Open a freehire job page to see your match.
+        Open a job posting to see your match.
         <button class="link" onclick={loadMatch}>Refresh</button>
       </p>
     {/if}

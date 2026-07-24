@@ -25,7 +25,7 @@ export interface FreehireJob {
   title: string;
   company: string;
   location: string;
-  posted_at: string | null;
+  posted_at?: string | null;
 }
 
 /** Deterministic skill-coverage match against the signed-in user's profile. */
@@ -44,8 +44,19 @@ async function getData<T>(path: string, token: string): Promise<T> {
   if (!res.ok) {
     throw new Error(`${path} → HTTP ${res.status}`);
   }
-  const body = (await res.json()) as { data: T };
-  return body.data;
+  return ((await res.json()) as { data: T }).data;
+}
+
+async function postData<T>(path: string, body: unknown, token: string): Promise<T> {
+  const res = await fetch(`${HIRE_ORIGIN}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`${path} → HTTP ${res.status}`);
+  }
+  return ((await res.json()) as { data: T }).data;
 }
 
 export function getJob(slug: string, token: string): Promise<FreehireJob> {
@@ -54,4 +65,12 @@ export function getJob(slug: string, token: string): Promise<FreehireJob> {
 
 export function getMatch(slug: string, token: string): Promise<JobMatch> {
   return getData<JobMatch>(`/api/v1/jobs/${encodeURIComponent(slug)}/match`, token);
+}
+
+/**
+ * Ad-hoc match for a job posting scraped off any page — no catalog job needed.
+ * The server extracts skills from title+text and scores them against the profile.
+ */
+export function getMatchText(title: string, text: string, token: string): Promise<JobMatch> {
+  return postData<JobMatch>('/api/v1/me/match-text', { title, text }, token);
 }
