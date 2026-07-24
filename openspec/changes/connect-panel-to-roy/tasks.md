@@ -13,17 +13,17 @@
 
 ## 3. Panel wiring (App.svelte)
 
-- [ ] 3.1 Replace the raw `WebSocket('ws://localhost:3899/ws')` + `parseServerEvent` with the `RoyClient` turn flow: lazily `createSession` on first send, `connect`, `subscribeFrames` before `attach(from_seq:0)`, then `acquire_input` → `fire(send)`; fold frames through `reduceTurnEvent`; drive the status line from `client.onStatus`
-- [ ] 3.2 Gate chat behind sign-in (require a stored JWT); surface connect/turn errors instead of leaving a message streaming
-- [ ] 3.3 "Read page": send the page snapshot to Roy as a context-prefixed `send` message (no stub round trip); leave Autofill untouched
+- [x] 3.1 Replace the raw `WebSocket('ws://localhost:3899/ws')` + `parseServerEvent` with the `RoyClient` turn flow: lazily `createSession` on first send, `connect`, `subscribeFrames` before `attach(from_seq:0)`, then `acquire_input` → `fire(send)`; fold frames through `reduceTurnEvent`; drive the status line from `client.onStatus`
+- [x] 3.2 Gate chat behind sign-in (require a stored JWT); surface connect/turn errors instead of leaving a message streaming
+- [x] 3.3 "Read page": send the page snapshot to Roy as a context-prefixed `send` message (no stub round trip); leave Autofill untouched
 
 ## 4. Remove the echo stub
 
-- [ ] 4.1 Delete the `server/` directory
-- [ ] 4.2 Trim `extension/lib/protocol.ts`: remove `ClientEvent` / `ServerEvent` / `parseServerEvent`; keep `PageSnapshot` / `FormField` / `Fill` / `RuntimeMessage`; fix any imports
-- [ ] 4.3 Update `AGENTS.md` where the stub is described as the agent seam
+- [x] 4.1 Delete the `server/` directory
+- [x] 4.2 Trim `extension/lib/protocol.ts`: remove `ClientEvent` / `ServerEvent` / `parseServerEvent`; keep `PageSnapshot` / `FormField` / `Fill` / `RuntimeMessage`; fix any imports
+- [x] 4.3 Update `AGENTS.md` where the stub is described as the agent seam
 
 ## 5. Verify
 
-- [ ] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build` green
+- [x] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build` green
 - [ ] 5.2 Live end-to-end against a local Roy (`ROY_ORIGIN`): sign in → send a message → see a streamed reply; "Read page" reaches the agent
