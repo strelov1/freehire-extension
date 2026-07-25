@@ -26,6 +26,12 @@ export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message: RuntimeMessage) => {
     switch (message.kind) {
       case 'GET_PAGE_SNAPSHOT':
+        // The page the user is looking at is the TOP document, so the snapshot is
+        // asked of that frame by id. Broadcasting it instead answers from whichever
+        // frame replies first, and on a page carrying an ad iframe that is routinely
+        // the ad: no og:title or h1, so the card came out titled "This page", and the
+        // match was scored against the ad's text rather than the posting's.
+        return relayToActiveTab(message, TOP_FRAME);
       case 'GET_FORM':
       case 'APPLY_FILLS':
         return relayToActiveTab(message);
@@ -41,7 +47,18 @@ export default defineBackground(() => {
   });
 });
 
-async function relayToActiveTab(message: RuntimeMessage): Promise<RuntimeMessage | undefined> {
+/** The tab's top document — frame 0 in every Chromium tab. */
+const TOP_FRAME = 0;
+
+/**
+ * Relays one message to the active tab. `frameId` addresses a single frame;
+ * without it the message goes to every frame the content script runs in and the
+ * reply is whichever one answers first — fine only where any frame will do.
+ */
+async function relayToActiveTab(
+  message: RuntimeMessage,
+  frameId?: number,
+): Promise<RuntimeMessage | undefined> {
   const tabId = await activeTabId();
   if (tabId == null) {
     // Only the snapshot request has a meaningful empty reply.
@@ -49,7 +66,9 @@ async function relayToActiveTab(message: RuntimeMessage): Promise<RuntimeMessage
       ? { kind: 'PAGE_SNAPSHOT', snapshot: emptySnapshot() }
       : undefined;
   }
-  return browser.tabs.sendMessage(tabId, message);
+  return frameId === undefined
+    ? browser.tabs.sendMessage(tabId, message)
+    : browser.tabs.sendMessage(tabId, message, { frameId });
 }
 
 /** Reads every frame of the active tab, tagging each field with its frame. */
