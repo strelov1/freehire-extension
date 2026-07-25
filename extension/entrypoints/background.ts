@@ -1,4 +1,10 @@
-import { emptySnapshot, type RuntimeMessage, type FramedField } from '../lib/protocol';
+import {
+  emptySnapshot,
+  type RuntimeMessage,
+  type FramedField,
+  type LabelFill,
+  type FillOutcome,
+} from '../lib/protocol';
 import { mergeFrameOutcomes } from '../lib/tools/executor';
 
 /**
@@ -24,7 +30,7 @@ export default defineBackground(() => {
       case 'GET_FRAMED_FORM':
         return readFramedForm();
       case 'FILL_BY_LABEL':
-        return fillAcrossFrames(message);
+        return fillAcrossFrames(message.fills);
       default:
         return undefined;
     }
@@ -57,9 +63,9 @@ async function readFramedForm(): Promise<RuntimeMessage> {
  * does not hold the field reports `not_found`, so the merge keeps whichever
  * frame actually did something with it.
  */
-async function fillAcrossFrames(message: RuntimeMessage & { kind: 'FILL_BY_LABEL' }): Promise<RuntimeMessage> {
-  const perFrame: Parameters<typeof mergeFrameOutcomes>[0] = [];
-  await eachFrame(message, (reply) => {
+async function fillAcrossFrames(fills: LabelFill[]): Promise<RuntimeMessage> {
+  const perFrame: FillOutcome[][] = [];
+  await eachFrame({ kind: 'FILL_BY_LABEL', fills }, (reply) => {
     if (reply?.kind === 'FILL_OUTCOMES') perFrame.push(reply.outcomes);
   });
   return { kind: 'FILL_OUTCOMES', outcomes: mergeFrameOutcomes(perFrame) };

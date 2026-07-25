@@ -7,7 +7,7 @@
  * (`internal/browsertools`) which forwards these frames verbatim.
  */
 
-import type { FramedField, LabelFill, FillOutcome } from '../protocol';
+import type { FramedField } from '../protocol';
 
 export type { FramedField };
 
@@ -27,18 +27,6 @@ export interface ToolResult {
   id: string;
   result?: unknown;
   error?: string;
-}
-
-export interface ReadFormResult {
-  fields: FramedField[];
-}
-
-export interface FillSimpleArgs {
-  fills: LabelFill[];
-}
-
-export interface FillSimpleResult {
-  outcomes: FillOutcome[];
 }
 
 /**
