@@ -1,13 +1,8 @@
 /**
- * Single source of truth for every message shape crossing a boundary.
- *
- * Two independent transports live here on purpose:
- *  - RuntimeMessage — inside the extension, over chrome.runtime
- *    (panel <-> background <-> content). Discriminated by `kind`.
- *  - ClientEvent / ServerEvent — over the WebSocket to the server
- *    (panel <-> server). Discriminated by `type`.
- *
- * The Rust server mirrors only the WebSocket half of this contract.
+ * Shapes for the in-extension transport: `RuntimeMessage` over chrome.runtime
+ * (panel <-> background <-> content), discriminated by `kind`. The chat itself
+ * talks to Roy directly over its own control protocol (see `lib/roy/`), not
+ * through here.
  */
 
 /** A read of whatever page the user is currently looking at. */
@@ -31,13 +26,46 @@ export interface FormField {
   name: string;
   required: boolean;
   value: string;
+  /** True for a custom-widget combobox (react-select and friends), which the
+   *  simple filler must not write into — see `fillByLabel`. */
+  combo: boolean;
   options?: string[];
+}
+
+/** A control plus the tab frame it lives in; 0 is the top document. */
+export interface FramedField extends FormField {
+  frame: number;
 }
 
 /** A value to write into the control at `index`. */
 export interface Fill {
   index: number;
   value: string;
+}
+
+/** A value to write into the control carrying `label` (see `fillByLabel`). */
+export interface LabelFill {
+  label: string;
+  value: string;
+}
+
+/**
+ * What became of one `LabelFill`. Every requested fill gets an outcome, so a
+ * caller never has to infer failure from a silent absence.
+ */
+export type FillStatus =
+  /** Written, and native input/change dispatched. */
+  | 'filled'
+  /** No control on the page carries that label. */
+  | 'not_found'
+  /** A custom-widget combobox — deliberately left alone (deferred capability). */
+  | 'deferred_combobox'
+  /** A native <select> with no option matching the value. */
+  | 'no_option';
+
+export interface FillOutcome {
+  label: string;
+  status: FillStatus;
 }
 
 /** Messages passed inside the extension via chrome.runtime. */
@@ -47,27 +75,15 @@ export type RuntimeMessage =
   | { kind: 'GET_FORM' }
   | { kind: 'FORM'; fields: FormField[] }
   | { kind: 'APPLY_FILLS'; fills: Fill[] }
-  | { kind: 'FILLS_APPLIED'; written: number };
-
-/** Envelopes the panel sends to the server over the WebSocket. */
-export type ClientEvent =
-  | { type: 'user_message'; text: string }
-  | { type: 'page_context'; snapshot: PageSnapshot };
-
-/** Envelopes the server sends back to the panel over the WebSocket. */
-export type ServerEvent = { type: 'assistant_message'; text: string };
+  | { kind: 'FILLS_APPLIED'; written: number }
+  // The browser-tool primitives: read every frame, and fill by label. Both fan
+  // out across the tab's frames in the background relay.
+  | { kind: 'GET_FRAMED_FORM' }
+  | { kind: 'FRAMED_FORM'; fields: FramedField[] }
+  | { kind: 'FILL_BY_LABEL'; fills: LabelFill[] }
+  | { kind: 'FILL_OUTCOMES'; outcomes: FillOutcome[] };
 
 /** An empty snapshot, used when no active tab can be read. */
 export function emptySnapshot(): PageSnapshot {
   return { url: '', title: '', headline: '', text: '' };
-}
-
-/** Narrows arbitrary WebSocket JSON to a known ServerEvent, or null. */
-export function parseServerEvent(raw: unknown): ServerEvent | null {
-  if (typeof raw !== 'object' || raw === null) return null;
-  const event = raw as Record<string, unknown>;
-  if (event.type === 'assistant_message' && typeof event.text === 'string') {
-    return { type: 'assistant_message', text: event.text };
-  }
-  return null;
 }

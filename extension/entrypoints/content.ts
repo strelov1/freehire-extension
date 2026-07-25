@@ -1,13 +1,17 @@
 import { extractSnapshot } from '../lib/scraper';
-import { extractForm, applyFills } from '../lib/form';
+import { extractForm, applyFills, fillByLabel } from '../lib/form';
 import type { RuntimeMessage } from '../lib/protocol';
 
 /**
- * Injected into every page. The extension's eyes + hands: it reads the page
- * (snapshot, form) and writes fills back. Owns no state.
+ * Injected into every page, and into every frame of it — apply forms are
+ * routinely served from an ATS iframe, so a top-document-only script would see
+ * an empty page. The extension's eyes + hands: it reads the page (snapshot,
+ * form) and writes fills back. Owns no state; the background relay addresses
+ * each frame individually and tags what comes back.
  */
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
   main() {
     browser.runtime.onMessage.addListener((message: RuntimeMessage) => {
       switch (message.kind) {
@@ -17,9 +21,17 @@ export default defineContentScript({
             snapshot: extractSnapshot(document),
           });
         case 'GET_FORM':
+        case 'GET_FRAMED_FORM':
+          // The frame tag is stamped by the background relay, which is the only
+          // side that knows this frame's id.
           return Promise.resolve<RuntimeMessage>({
             kind: 'FORM',
             fields: extractForm(document),
+          });
+        case 'FILL_BY_LABEL':
+          return Promise.resolve<RuntimeMessage>({
+            kind: 'FILL_OUTCOMES',
+            outcomes: fillByLabel(document, message.fills),
           });
         case 'APPLY_FILLS':
           return Promise.resolve<RuntimeMessage>({

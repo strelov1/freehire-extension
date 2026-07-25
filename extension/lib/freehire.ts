@@ -125,6 +125,24 @@ export function getAutofillProfile(token: string): Promise<AutofillProfile> {
   return getData<AutofillProfile>('/api/v1/me/autofill-profile', token);
 }
 
+/** What the agent did to the form it was pointed at. */
+export interface AutofillReport {
+  filled: string[];
+  /** Custom-widget comboboxes — not fillable yet, reported rather than corrupted. */
+  deferred: string[];
+  /** Fields the agent found no basis for in the profile. */
+  unmapped: string[];
+}
+
+/**
+ * Asks freehire's agent to fill the form on the page the panel is looking at. The
+ * agent drives this extension back over the browser-tool wire, so the panel's
+ * ToolChannel has to be attached before this is called.
+ */
+export function runAgentAutofill(token: string): Promise<AutofillReport> {
+  return postData<AutofillReport>('/api/v1/me/autofill/run', {}, token);
+}
+
 /** Resolves a posting to a freehire catalog slug by company + title, or null. */
 export async function findJob(company: string, title: string, token: string): Promise<string | null> {
   const q = `company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;
