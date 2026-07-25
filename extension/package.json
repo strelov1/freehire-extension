@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
-    "zip": "wxt zip",
+    "zip": "WXT_RELEASE=1 wxt zip",
     "test": "vitest run",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "postinstall": "wxt prepare"
