@@ -9,17 +9,28 @@
 
 ## 2. Observation: options and grouping
 
-- [ ] 2.1 `form.ts`: read a combobox's offered options where they are exposed without opening; report them on the field.
-- [ ] 2.2 `form.ts`: group controls answering one question (shared `fieldset`/`legend` or equivalently labelled container) into one field carrying the question's label and its options; leave ungrouped anything whose structure is not clearly one question. Unit-test both directions.
-- [ ] 2.3 `read_form` carries the new shape (widget options, grouped field); `fill_simple` fills a grouped field by option text and refuses an option the group does not offer.
+- [x] 2.1 `form.ts`: read a combobox's offered options where they are exposed without opening; report them on the field.
+      Read from the listbox the widget's own `aria-controls`/`aria-owns` names — resolved as the id *list* ARIA defines, so a widget pointing at a live-region node beside its listbox still reports its options. A page-wide `[role=option]` sweep would hand a closed question its neighbour's countries on a form of 27 widgets. Options the user cannot see are left out, on the same grounds as hidden controls. A react-select carries none here, having no listbox until opened.
+- [x] 2.2 `form.ts`: group controls answering one question (shared `fieldset`/`legend` or equivalently labelled container) into one field carrying the question's label and its options; leave ungrouped anything whose structure is not clearly one question. Unit-test both directions.
+      Grouping keys on the container *and* the controls' shared `name` and type: a "Demographic Questions" fieldset wrapping both a Yes/No radio pair and a country checklist asks two questions, and merging them would offer all the options at once and leave the second unanswerable. The "equivalently labelled container" is `role="group"`/`role="radiogroup"` carrying `aria-labelledby`/`aria-label`. Both directions tested, including the four ways grouping declines: text inputs sharing a fieldset, a lone checkbox, a legend-less fieldset, and an unlabelled container.
+- [x] 2.3 `read_form` carries the new shape (widget options, grouped field); `fill_simple` fills a grouped field by option text and refuses an option the group does not offer.
+      A group reports every already-chosen option as one comma-joined value and accepts that value back, matching the whole string as a single option before splitting it — "Korea, Republic of" is one country, not two the group has never heard of. An option the group does not offer leaves it wholly untouched. Filling ticks and never clears: a group may already carry an answer the user chose by hand.
 
 ## 3. `combobox.*` primitives
 
-- [ ] 3.1 `combobox.open` — reveal the listbox by label; report open / did-not-open / not-found.
-- [ ] 3.2 `combobox.options` — return the offered option texts; nothing when the widget is not open.
-- [ ] 3.3 `combobox.select` — commit an offered option by acting on the option; refuse a value the widget does not offer.
-- [ ] 3.4 `combobox.verify` — read back the widget's committed value; a mismatch is a failure, never a fill.
-- [ ] 3.5 Unit-test the four against a react-select-shaped fixture, including the mismatch path.
+> Implemented and green, but the code-review pass over this group was cancelled
+> before it reported — unlike group 2, these five carry no reviewed-clean stamp.
+
+- [x] 3.1 `combobox.open` — reveal the listbox by label; report open / did-not-open / not-found.
+      Presses the widget itself rather than an ancestor matched by class name, since the widget's handler sits on an ancestor and events bubble up to it — `[class*="-control"]` would also match Bootstrap's `form-control` and press the wrong node. Awaits the listbox instead of reading straight back.
+- [x] 3.2 `combobox.options` — return the offered option texts; nothing when the widget is not open.
+      A closed widget and an open one offering nothing are reported apart, because their remedies differ: the first needs opening, the second is the out-of-scope typeahead. `aria-expanded` outranks the mere presence of a listbox, so a library that keeps its list in the DOM behind `display:none` is not read as open.
+- [x] 3.3 `combobox.select` — commit an offered option by acting on the option; refuse a value the widget does not offer.
+      Acts on the option node from the widget's own listbox, and waits for the widget to close so a following `verify` reads the committed value rather than the state before it landed.
+- [x] 3.4 `combobox.verify` — read back the widget's committed value; a mismatch is a failure, never a fill.
+      Compares by containment in one direction — committed ⊆ chosen option — for the reason recorded in 1.2. Reads by walking up from the widget and stopping the moment the subtree holds a second combobox, which makes reporting a *neighbour's* value impossible rather than merely unlikely.
+- [x] 3.5 Unit-test the four against a react-select-shaped fixture, including the mismatch path.
+      The fixture opens and commits on a *later tick*, so a primitive that merely dispatches-and-reads fails it. Covers the mismatch path with the spike's own case (a question wanting "No" left holding "Norfolk Island"), the shortened-display path ("+358" for "Åland Islands +358"), a widget deaf to dispatched events, and a hidden persistent listbox.
 
 ## 4. Agent loop
 
@@ -30,5 +41,9 @@
 ## 5. Verify
 
 - [ ] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build`; hire: agent tests green.
+      Extension green: 109 tests / 11 files, `svelte-check` 999 files 0 errors, `wxt build` 77.88 kB. Hire's agent tests are task group 4's, deliberately out of this session's scope.
 - [ ] 5.2 Live end-to-end on the same two Greenhouse forms used as the baseline (Stripe: 4 filled / 13 widgets + 1 group; Scout Motors: 6 filled / 27 widgets). Record the new numbers; nothing is submitted.
+      **Observation half measured** by injecting this change's own `form.ts` into both live forms (read-only; nothing filled, nothing submitted). Stripe: 59 controls → **31 questions**, the 29-country question now one field carrying 29 options and `required: true`. Scout Motors: 61 controls → 61 questions, 27 widgets, no groups — it has no checkbox groups to collapse. On both forms **no** widget carries options while closed, so the agent must go through `combobox.open` + `combobox.options`, exactly as designed.
+      **Fill half still outstanding**: it needs the agent loop (task group 4, in hire) plus a signed-in panel, so the filled/not-fillable counts cannot be recorded yet.
 - [ ] 5.3 Confirm no new permission: the built manifest asks for no `debugger`, and Chrome shows no debugging banner while autofill runs.
+      Built manifest asks for `storage`, `tabs`, `sidePanel`, `scripting`, `activeTab`, `identity` — no `debugger`. The banner half needs a live autofill run, so it waits on 5.2's fill half.

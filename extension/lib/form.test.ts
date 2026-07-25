@@ -389,6 +389,20 @@ describe('extractForm grouping', () => {
     ]);
   });
 
+  it('leaves nameless controls ungrouped, having nothing that says they answer together', () => {
+    // A React-controlled form omits `name` entirely, so nothing distinguishes one
+    // question from two inside a shared legend. Grouping on the container alone
+    // would merge them and hide the second; a long report is the safer failure.
+    const fieldset = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'Demographic Questions';
+    fieldset.append(legend);
+    optionControls(fieldset, ['Yes', 'No', 'Germany', 'Poland'], 'checkbox', '');
+    document.body.append(fieldset);
+
+    expect(extractForm(document).map((f) => f.label)).toEqual(['Yes', 'No', 'Germany', 'Poland']);
+  });
+
   it('groups a labelled container that is not a fieldset', () => {
     const heading = document.createElement('h3');
     heading.id = 'q-visa';
@@ -461,6 +475,24 @@ describe('fillByLabel on a group', () => {
     fillByLabel(document, [{ label: 'Which countries?', value: 'Korea, Republic of' }]);
 
     expect(korea.checked).toBe(true);
+  });
+
+  it('round-trips a value whose options contain commas of their own', () => {
+    // Both chosen, so the reported value is "Germany, Korea, Republic of" — which
+    // splits into three parts the group has never heard of. Only matching the
+    // longest offered option at each step recovers the two real answers.
+    const [germany, korea] = checkboxGroup('Which countries?', ['Germany', 'Korea, Republic of']);
+    germany.checked = true;
+    korea.checked = true;
+    const reported = extractForm(document)[0].value;
+    expect(reported).toBe('Germany, Korea, Republic of');
+
+    germany.checked = false;
+    korea.checked = false;
+    const outcomes = fillByLabel(document, [{ label: 'Which countries?', value: reported }]);
+
+    expect([germany.checked, korea.checked]).toEqual([true, true]);
+    expect(outcomes).toEqual([{ label: 'Which countries?', status: 'filled' }]);
   });
 
   it('ticks nothing when only some of the named options are offered', () => {

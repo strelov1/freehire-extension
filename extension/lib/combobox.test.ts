@@ -260,6 +260,149 @@ describe('combobox.verify', () => {
   });
 });
 
+let committedCount = 0;
+
+/**
+ * A widget already holding committed values, with no listbox of its own.
+ * `declareAs` picks which attribute marks it a combobox — `isComboWidget`
+ * accepts several, and anything reading widgets must accept the same set.
+ */
+function committedWidget(
+  labelText: string,
+  values: string[],
+  { declareAs = 'role', parent = document.body }: { declareAs?: 'role' | 'aria-haspopup'; parent?: Element } = {},
+) {
+  const slug = `c${committedCount++}`;
+  const label = document.createElement('label');
+  label.setAttribute('for', slug);
+  label.textContent = labelText;
+
+  const control = document.createElement('div');
+  control.className = 'select__control';
+  for (const value of values) {
+    const shown = document.createElement('div');
+    shown.className = values.length > 1 ? 'css-1p3m7a8-multiValue' : 'css-1dimb5e-singleValue';
+    shown.textContent = value;
+    control.append(shown);
+  }
+  const input = document.createElement('input');
+  input.id = slug;
+  if (declareAs === 'role') input.setAttribute('role', 'combobox');
+  else input.setAttribute('aria-haspopup', 'listbox');
+  control.append(input);
+
+  const wrap = document.createElement('div');
+  wrap.append(label, control);
+  parent.append(wrap);
+  return { input, control };
+}
+
+describe('combobox.verify cannot claim a write that did not happen', () => {
+  beforeEach(reset);
+
+  it("never reports a neighbour's value, however that neighbour declares itself", () => {
+    // Two widgets in one row. The neighbour says it is a combobox with
+    // aria-haspopup rather than role, so a guard counting only [role=combobox]
+    // would walk straight past it and read its "Germany".
+    const row = document.createElement('div');
+    row.className = 'form-row';
+    document.body.append(row);
+    const { control: mine } = committedWidget('Country of residence', [], { parent: row });
+    committedWidget('Country of citizenship', ['Germany'], { declareAs: 'aria-haspopup', parent: row });
+
+    expect(mine.textContent).toBe('');
+    expect(combobox.verify(document, 'Country of residence', 'Germany')).toEqual({
+      status: 'empty',
+      committed: '',
+    });
+  });
+
+  it('refuses a label that addresses more than one widget', () => {
+    // A repeated education row: Greenhouse asks School/Degree/Discipline once
+    // per row, so the label alone cannot say which row is meant. Answering for
+    // the first would report row 1's value as row 2's.
+    committedWidget('School', ['MIT']);
+    committedWidget('School', []);
+
+    expect(combobox.verify(document, 'School', 'MIT')).toEqual({ status: 'ambiguous', committed: '' });
+    expect(combobox.options(document, 'School')).toEqual({ status: 'ambiguous', options: [] });
+  });
+
+  it('accepts a pick that is one of several committed values', () => {
+    // A multi-select widget renders one chip per choice. Reading only the first
+    // would report a correct second pick as a mismatch.
+    committedWidget('Which countries?', ['Germany', 'Poland']);
+
+    expect(combobox.verify(document, 'Which countries?', 'Poland')).toEqual({
+      status: 'verified',
+      committed: 'Germany, Poland',
+    });
+  });
+});
+
+describe('combobox.open trusts the widget wherever it states itself', () => {
+  beforeEach(reset);
+
+  it('reads aria-expanded from the wrapper that carries it', async () => {
+    // ARIA 1.1 puts role=combobox and aria-expanded on a wrapper, not the input,
+    // and the listbox stays in the DOM hidden with visibility/opacity rather
+    // than display:none.
+    const label = document.createElement('label');
+    label.setAttribute('for', 'd');
+    label.textContent = 'Country';
+    const input = document.createElement('input');
+    input.id = 'd';
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', 'lb');
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute('role', 'combobox');
+    wrapper.setAttribute('aria-expanded', 'false');
+    wrapper.append(input);
+    const listbox = document.createElement('div');
+    listbox.id = 'lb';
+    listbox.setAttribute('role', 'listbox');
+    listbox.style.visibility = 'hidden';
+    for (const t of ['Germany', 'Poland']) {
+      const option = document.createElement('div');
+      option.setAttribute('role', 'option');
+      option.textContent = t;
+      listbox.append(option);
+    }
+    document.body.append(label, wrapper, listbox);
+
+    expect(combobox.options(document, 'Country')).toEqual({ status: 'not_open', options: [] });
+  });
+});
+
+describe('combobox.select does not claim a commit it cannot see', () => {
+  beforeEach(reset);
+
+  it('reports a widget that stayed open and committed nothing', async () => {
+    const label = document.createElement('label');
+    label.setAttribute('for', 'g');
+    label.textContent = 'Country';
+    const input = document.createElement('input');
+    input.id = 'g';
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-expanded', 'true');
+    input.setAttribute('aria-controls', 'glb');
+    const control = document.createElement('div');
+    control.className = 'select__control';
+    control.append(input);
+    const listbox = document.createElement('div');
+    listbox.id = 'glb';
+    listbox.setAttribute('role', 'listbox');
+    const option = document.createElement('div');
+    option.setAttribute('role', 'option');
+    option.textContent = 'Germany';
+    listbox.append(option);
+    // Nothing listens: a widget that would need trusted input.
+    document.body.append(label, control, listbox);
+
+    expect(await combobox.select(document, 'Country', 'Germany')).toEqual({ status: 'did_not_commit' });
+  });
+});
+
 describe('combobox.runStep', () => {
   beforeEach(reset);
 

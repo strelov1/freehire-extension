@@ -95,6 +95,10 @@ export function collectQuestions(doc: Document): Question[] {
  */
 function groupOf(el: Fillable): { container: Element; question: string; key: string } | null {
   if (!(el instanceof HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio')) return null;
+  // No name, no evidence: a React-controlled form may omit it entirely, and then
+  // nothing distinguishes one question in a container from two. A long report is
+  // the safer failure, so such controls stay ungrouped.
+  if (!el.name) return null;
   const labelled = labelledContainer(el);
   return labelled ? { ...labelled, key: `${el.type} ${el.name}` } : null;
 }
@@ -217,10 +221,23 @@ function collapseText(el: Element): string {
   return collapse(el.textContent);
 }
 
-/** True when the element is on screen for the user; see `isHidden`. */
-function isOnScreen(el: Element): boolean {
+/**
+ * True when the element is on screen for the user; see `isHidden`. A widget's
+ * menu is routinely hidden with `visibility` or `opacity` rather than `display`,
+ * which `checkVisibility` ignores unless asked, so those are checked explicitly.
+ */
+export function isOnScreen(el: Element): boolean {
   if (el.closest('[hidden]')) return false;
-  return typeof el.checkVisibility !== 'function' || el.checkVisibility();
+  if (typeof el.checkVisibility === 'function' && !el.checkVisibility()) return false;
+
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = view.getComputedStyle(node);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (style.opacity === '0') return false;
+  }
+  return true;
 }
 
 /**
@@ -232,12 +249,16 @@ function isOnScreen(el: Element): boolean {
  */
 export function isComboWidget(el: Fillable): boolean {
   if (el instanceof HTMLSelectElement) return false;
-  return (
-    el.getAttribute('role') === 'combobox' ||
-    el.hasAttribute('aria-autocomplete') ||
-    el.getAttribute('aria-haspopup') === 'listbox'
-  );
+  return el.matches(COMBO_WIDGET);
 }
+
+/**
+ * The ways a widget declares itself a combobox. Exported because anything that
+ * reads *around* a widget must recognise the same set: a guard counting only
+ * `[role=combobox]` would walk straight past a neighbour that says
+ * `aria-haspopup="listbox"` instead, and report that neighbour's value.
+ */
+export const COMBO_WIDGET = '[role="combobox"], [aria-autocomplete], [aria-haspopup="listbox"]';
 
 /** Best-effort human label for a control, in decreasing reliability. */
 function extractLabel(el: Fillable): string {
@@ -354,20 +375,37 @@ function answerQuestion({ controls }: Question, value: string): boolean {
  * The controls a group's requested value names, or null when it names one the
  * group does not offer.
  *
- * A group reports every chosen option as one comma-joined value, so it must
- * accept that value back. The whole string is matched as a single option first,
- * since an option may carry a comma of its own — "Korea, Republic of" is one
- * country, not two the group has never heard of.
+ * A group reports every chosen option as one comma-joined value and must accept
+ * that value back — but an option may carry a comma of its own, so splitting on
+ * commas would turn "Germany, Korea, Republic of" into three countries the group
+ * has never heard of. Instead the value is consumed from the front, taking the
+ * *longest* option that matches at each step, which recovers both readings
+ * unambiguously.
  */
 function chosenOptions(controls: Fillable[], value: string): Fillable[] | null {
-  const offering = (text: string) => controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(text));
+  const byLongestLabel = [...controls].sort((a, b) => extractLabel(b).length - extractLabel(a).length);
+  const chosen: Fillable[] = [];
+  let rest = value.trim();
 
-  const whole = offering(value);
-  if (whole) return [whole];
+  while (rest) {
+    const next = byLongestLabel.find((c) => startsWithOption(rest, extractLabel(c)));
+    if (!next) return null;
+    chosen.push(next);
+    rest = rest.slice(extractLabel(next).trim().length).replace(/^\s*,\s*/, '').trim();
+  }
+  return chosen.length ? chosen : null;
+}
 
-  const parts = value.split(',').filter((part) => part.trim());
-  const named = parts.map(offering).filter((c): c is Fillable => !!c);
-  return named.length === parts.length ? named : null;
+/** True when `value` opens with exactly this option, not merely with its prefix. */
+function startsWithOption(value: string, option: string): boolean {
+  const label = option.trim();
+  if (!label) return false;
+  const head = value.slice(0, label.length);
+  if (normalizeLabel(head) !== normalizeLabel(label)) return false;
+  // "Germany" must not match inside "Germanywest": what follows has to end the
+  // option, either at the string's end or at the separator.
+  const tail = value.slice(label.length);
+  return tail === '' || /^\s*,/.test(tail);
 }
 
 /** Writes one control, dispatching native events. Returns false if unfillable. */
