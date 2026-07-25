@@ -110,6 +110,9 @@ panel --send(page context)--> Roy --frames(reply)--> panel
 cd extension && npm install          # runs `wxt prepare` (generates .wxt/)
 cd extension && npm run dev          # dev build with HMR
 cd extension && npm run build        # production build -> .output/chrome-mv3
+                                     # targets freehire.me + agent.freehire.me
+                                     # (extension/.env.production); dev keeps
+                                     # the localhost defaults
 cd extension && npm test             # vitest: scraper + protocol + form + roy
 cd extension && npm run check        # svelte-check
 ```

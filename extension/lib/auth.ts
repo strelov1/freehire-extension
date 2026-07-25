@@ -1,11 +1,13 @@
 import { browser } from 'wxt/browser';
 
 /**
- * Where the hire session lives in dev. Point at the SPA origin (not the API port)
- * so the launchWebAuthFlow popup carries the session cookie and the /api proxy
- * forwards it — mirroring production, where SPA and API are one origin.
+ * Where the hire session lives. Set `WXT_HIRE_ORIGIN` to build against a
+ * deployment (`.env.production` points at freehire.me); the default is the local
+ * SPA origin, not the API port, so the launchWebAuthFlow popup carries the
+ * session cookie and the /api proxy forwards it — mirroring production, where
+ * SPA and API are one origin.
  */
-export const HIRE_ORIGIN = 'http://localhost:5173';
+export const HIRE_ORIGIN = import.meta.env.WXT_HIRE_ORIGIN ?? 'http://localhost:5173';
 
 const TOKEN_KEY = 'hireToken';
 
