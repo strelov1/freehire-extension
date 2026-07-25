@@ -33,4 +33,7 @@ jobs:
         with:
           name: chrome-mv3
           path: extension/.output/*.zip
+          # .output is a dotted directory, and upload-artifact skips hidden
+          # paths unless told otherwise.
+          include-hidden-files: true
           if-no-files-found: error
