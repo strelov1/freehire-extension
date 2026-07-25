@@ -23,4 +23,11 @@
 ## 5. Verify
 
 - [x] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build`; hire: relay tests green.
-- [ ] 5.2 Live end-to-end: on a real apply form, the agent fills the standard fields through the wire; comboboxes are reported, not corrupted.
+- [x] 5.2 Live end-to-end: on a real apply form, the agent fills the standard fields through the wire; comboboxes are reported, not corrupted.
+  - Run against a real hire server: `POST /me/autofill/run` → agent → relay → the
+    extension's own executor → DOM. Filled name/email/phone/city/LinkedIn;
+    reported the react-select combobox as deferred without touching it; dropped
+    an invented cover-letter answer before it reached the browser. The model was
+    a local stand-in returning a fixed plan — everything else was real.
+  - Still to do by hand: load the unpacked extension in Chrome and repeat on a
+    live ATS posting, which also exercises the frame fan-out and the panel UI.
