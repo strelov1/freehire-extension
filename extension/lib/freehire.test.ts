@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { freehireSlugFromUrl, resolveNotice } from './freehire';
+import { freehireSlugFromUrl, resolveNotice, apiErrorMessage } from './freehire';
 
 describe('freehireSlugFromUrl', () => {
   it('extracts the slug from a freehire job URL', () => {
@@ -28,6 +28,38 @@ describe('freehireSlugFromUrl', () => {
 
   it('returns null for junk input', () => {
     expect(freehireSlugFromUrl('not a url')).toBeNull();
+  });
+});
+
+describe('apiErrorMessage', () => {
+  it("carries the server's own sentence, which is the whole diagnosis", () => {
+    // /me/autofill/run answers 409 for three unrelated states; only this
+    // sentence says which one.
+    expect(
+      apiErrorMessage('/api/v1/me/autofill/run', 409, '{"error":"the browser extension is not connected"}'),
+    ).toBe('the browser extension is not connected (HTTP 409)');
+  });
+
+  it('distinguishes the other states behind the same status', () => {
+    expect(apiErrorMessage('/api/v1/me/autofill/run', 409, '{"error":"no fillable fields on this page"}')).toBe(
+      'no fillable fields on this page (HTTP 409)',
+    );
+  });
+
+  it('falls back to the path when the body says nothing', () => {
+    expect(apiErrorMessage('/api/v1/me/autofill-profile', 500, '')).toBe(
+      '/api/v1/me/autofill-profile → HTTP 500',
+    );
+  });
+
+  it('falls back when a proxy answers with something that is not our JSON', () => {
+    expect(apiErrorMessage('/api/v1/jobs/find', 502, '<html>Bad Gateway</html>')).toBe(
+      '/api/v1/jobs/find → HTTP 502',
+    );
+  });
+
+  it('falls back when the JSON carries no error field', () => {
+    expect(apiErrorMessage('/api/v1/jobs/find', 404, '{"data":null}')).toBe('/api/v1/jobs/find → HTTP 404');
   });
 });
 

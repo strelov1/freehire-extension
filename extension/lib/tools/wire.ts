@@ -7,9 +7,9 @@
  * (`internal/browsertools`) which forwards these frames verbatim.
  */
 
-import type { FramedField } from '../protocol';
+import type { FramedField, FramedUpload } from '../protocol';
 
-export type { FramedField };
+export type { FramedField, FramedUpload };
 
 /** A tool invocation travelling harness → extension. */
 export interface ToolCall {

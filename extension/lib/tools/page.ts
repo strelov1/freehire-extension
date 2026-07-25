@@ -6,18 +6,17 @@
 
 import { browser } from 'wxt/browser';
 import type { ComboboxStep, LabelFill, RuntimeMessage } from '../protocol';
-import type { PageBridge } from './executor';
-import type { FramedField } from './wire';
+import type { FormObservation, PageBridge } from './executor';
 
 async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined> {
   return (await browser.runtime.sendMessage(message)) as RuntimeMessage | undefined;
 }
 
 export const activeTabPage: PageBridge = {
-  async readForm(): Promise<FramedField[]> {
+  async readForm(): Promise<FormObservation> {
     const reply = await ask({ kind: 'GET_FRAMED_FORM' });
     if (reply?.kind !== 'FRAMED_FORM') throw new Error('could not read the page');
-    return reply.fields;
+    return { fields: reply.fields, uploads: reply.uploads };
   },
 
   async fillSimple(fills: LabelFill[]) {

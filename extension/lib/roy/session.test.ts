@@ -34,6 +34,14 @@ describe('createSession', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 401 })));
     await expect(createSession('t')).rejects.toThrow(/401/);
   });
+
+  it("carries Roy's own reason, which the WebSocket handshake could never report", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'auth required' }), { status: 401 })),
+    );
+    await expect(createSession('t')).rejects.toThrow('auth required (HTTP 401)');
+  });
 });
 
 describe('royWsUrl', () => {

@@ -3,7 +3,7 @@ import { respondTo } from './client';
 import type { PageBridge } from './executor';
 
 const page: PageBridge = {
-  readForm: async () => [],
+  readForm: async () => ({ fields: [], uploads: [] }),
   fillSimple: async (fills) => fills.map((f) => ({ label: f.label, status: 'filled' as const })),
   combobox: async () => ({ status: 'not_found' }),
 };
@@ -12,7 +12,7 @@ describe('respondTo', () => {
   it('answers a tool call with a result frame correlated by id', async () => {
     const out = await respondTo('{"id":"x1","tool":"read_form"}', page);
 
-    expect(JSON.parse(out!)).toEqual({ id: 'x1', result: { fields: [] } });
+    expect(JSON.parse(out!)).toEqual({ id: 'x1', result: { fields: [], uploads: [] } });
   });
 
   it('answers a failing call with an error frame rather than nothing', async () => {

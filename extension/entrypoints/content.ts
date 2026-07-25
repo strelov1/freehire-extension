@@ -1,5 +1,5 @@
 import { extractSnapshot } from '../lib/scraper';
-import { extractForm, applyFills, fillByLabel } from '../lib/form';
+import { extractForm, extractUploads, fillByLabel } from '../lib/form';
 import { runStep } from '../lib/combobox';
 import type { RuntimeMessage } from '../lib/protocol';
 
@@ -21,23 +21,20 @@ export default defineContentScript({
             kind: 'PAGE_SNAPSHOT',
             snapshot: extractSnapshot(document),
           });
-        case 'GET_FORM':
         case 'GET_FRAMED_FORM':
           // The frame tag is stamped by the background relay, which is the only
-          // side that knows this frame's id.
+          // side that knows this frame's id. The uploads travel alongside the
+          // questions: they are not fillable, they say whether this is an
+          // application at all.
           return Promise.resolve<RuntimeMessage>({
             kind: 'FORM',
             fields: extractForm(document),
+            uploads: extractUploads(document),
           });
         case 'FILL_BY_LABEL':
           return Promise.resolve<RuntimeMessage>({
             kind: 'FILL_OUTCOMES',
             outcomes: fillByLabel(document, message.fills),
-          });
-        case 'APPLY_FILLS':
-          return Promise.resolve<RuntimeMessage>({
-            kind: 'FILLS_APPLIED',
-            written: applyFills(document, message.fills),
           });
         case 'COMBOBOX_STEP':
           // The only asynchronous handler here: a widget re-renders when its

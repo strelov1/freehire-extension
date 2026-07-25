@@ -1,3 +1,5 @@
+import { apiErrorMessage } from '../freehire';
+
 // Roy (freehire-agent) session bootstrap. Auth crosses origins via the session
 // JWT the extension holds (the "Sign in with freehire" connect flow): the HTTP
 // API takes `Authorization: Bearer`, and the WebSocket takes the `roy-jwt`
@@ -24,8 +26,12 @@ export async function createSession(token: string): Promise<string> {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({}),
   });
-  if (!res.ok) throw new Error(`could not create session (${res.status})`);
-  const body = (await res.json()) as { session_id?: string };
-  if (!body?.session_id) throw new Error('session response missing session_id');
-  return body.session_id;
+  const body = await res.text();
+  // Roy answers `{"error": "<why>"}`, and this call is where an auth problem has
+  // to surface: the WebSocket handshake that follows cannot report one, because
+  // a browser hides the handshake's response code from script.
+  if (!res.ok) throw new Error(apiErrorMessage('/sessions', res.status, body));
+  const parsed = JSON.parse(body) as { session_id?: string };
+  if (!parsed?.session_id) throw new Error('session response missing session_id');
+  return parsed.session_id;
 }

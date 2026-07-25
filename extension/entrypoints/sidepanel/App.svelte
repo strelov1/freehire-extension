@@ -21,7 +21,7 @@
     type JobMatch,
     type AutofillProfile,
   } from '../../lib/freehire';
-  import { matchFieldKey } from '../../lib/form';
+  import { planLabelFills, looksLikeApplication, scopeToApplication } from '../../lib/form';
   import { ToolChannel } from '../../lib/tools/client';
   import { activeTabPage } from '../../lib/tools/page';
   import MatchCard from './MatchCard.svelte';
@@ -239,7 +239,15 @@
 
   // Connect to Roy and attach to a (lazily created) session. Idempotent: safe to
   // call before every dispatch.
+  //
+  // The session comes first, and not only because the socket has nothing to
+  // attach to without it: `POST /sessions` is plain HTTP, so a rejected token is
+  // reported as "auth required (HTTP 401)". The WebSocket handshake cannot say
+  // that — a browser hides the handshake's response code from script — so
+  // connecting first turned every auth failure into an opaque "failed to
+  // connect to wss://…".
   async function ensureConnected(token: string) {
+    if (!sessionId) sessionId = await createSession(token);
     if (!client) {
       client = new RoyClient();
       client.onStatus((s) => {
@@ -260,7 +268,6 @@
       });
       await client.connect(royWsUrl(), token);
     }
-    if (!sessionId) sessionId = await createSession(token);
     if (!attached) {
       // Subscribe BEFORE attaching so the `from_seq: 0` replay frames are caught.
       // Guard against re-subscribing when a prior attach failed but left the sub
@@ -405,8 +412,10 @@
         notices.push(`Left for you: ${nameSome(report.unmapped)}.`);
       }
     } catch (err) {
+      // The server's own sentence, not just the status: /me/autofill/run answers
+      // 409 for three unrelated states, and only that sentence says which.
       notices.push(
-        `Agent autofill unavailable (${err instanceof Error ? err.message : 'error'}) — using the basic filler.`,
+        `Agent autofill unavailable: ${err instanceof Error ? err.message : 'error'} — using the basic filler.`,
       );
       await deterministicAutofill(token);
     } finally {
@@ -414,31 +423,79 @@
     }
   }
 
-  async function deterministicAutofill(token: string) {
+  /**
+   * The fallback filler, over the same frame-aware primitives the agent drives:
+   * an apply form is routinely served from an ATS iframe, and a careers page
+   * carrying any other iframe would otherwise be answered by whichever frame
+   * replied first. Addressing questions by label rather than by position also
+   * keeps the read and the write on the same question when a form re-renders
+   * between them.
+   */
+  /**
+   * The fill the user has been offered but not yet confirmed, because the page
+   * does not look like it is showing an application form. Held so "Fill anyway"
+   * runs the same pass rather than re-reading a page that may have moved on.
+   */
+  let overrideFill = $state<(() => Promise<void>) | null>(null);
+
+  async function runOverrideFill() {
+    const run = overrideFill;
+    if (!run || autofilling) return;
+    overrideFill = null;
+    autofilling = true;
+    try {
+      await run();
+    } finally {
+      autofilling = false;
+    }
+  }
+
+  async function deterministicAutofill(token: string, force = false) {
     try {
       const formReply = (await browser.runtime.sendMessage({
-        kind: 'GET_FORM',
+        kind: 'GET_FRAMED_FORM',
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-      if (formReply?.kind !== 'FORM' || formReply.fields.length === 0) {
+      if (formReply?.kind !== 'FRAMED_FORM' || formReply.fields.length === 0) {
         notices.push('No form fields found on this page.');
         return;
       }
-      const values = profileToValues(await getAutofillProfile(token));
-      const fills = formReply.fields.flatMap((f) => {
-        const key = matchFieldKey(f.label);
-        const value = key ? values[key] : '';
-        return key && value ? [{ index: f.index, value }] : [];
-      });
+
+      // A careers page keeps the application behind an "Apply" button and shows a
+      // job-alert signup meanwhile; filling that one silently is worse than
+      // declining, so the user is told and can insist.
+      if (!force && !looksLikeApplication(formReply.uploads)) {
+        notices.push(
+          `This doesn't look like the application form — ${formReply.fields.length} field${
+            formReply.fields.length === 1 ? '' : 's'
+          } are showing and none of them takes a CV. Open the application on the page, then try again.`,
+        );
+        overrideFill = () => deterministicAutofill(token, true);
+        return;
+      }
+      overrideFill = null;
+
+      // One form, not every question on the page: an application and a job-alert
+      // signup each have their own "Email".
+      const scoped = scopeToApplication(formReply.fields, formReply.uploads);
+      const fills = planLabelFills(scoped, profileToValues(await getAutofillProfile(token)));
       if (fills.length === 0) {
         notices.push('Nothing matched your profile on this form.');
         return;
       }
       const applied = (await browser.runtime.sendMessage({
-        kind: 'APPLY_FILLS',
+        kind: 'FILL_BY_LABEL',
         fills,
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-      const n = applied?.kind === 'FILLS_APPLIED' ? applied.written : 0;
+      const outcomes = applied?.kind === 'FILL_OUTCOMES' ? applied.outcomes : [];
+      const n = outcomes.filter((o) => o.status === 'filled').length;
       notices.push(`✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.`);
+
+      // A custom-widget combobox commits whatever its own listbox highlights, so
+      // the simple filler declines it rather than writing a wrong value.
+      const deferred = outcomes.filter((o) => o.status === 'deferred_combobox').map((o) => o.label);
+      if (deferred.length > 0) {
+        notices.push(`Not fillable yet (custom dropdowns): ${nameSome(deferred)}.`);
+      }
     } catch (err) {
       notices.push(`Autofill failed: ${err instanceof Error ? err.message : 'error'}`);
     }
@@ -517,6 +574,11 @@
     {#each notices as notice}
       <div class="message system">{notice}</div>
     {/each}
+    {#if overrideFill}
+      <div class="message system">
+        <button class="link" onclick={runOverrideFill} disabled={autofilling}>Fill it anyway</button>
+      </div>
+    {/if}
     {#if chatError}
       <div class="message system err">{chatError}</div>
     {/if}
