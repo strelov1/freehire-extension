@@ -1,5 +1,6 @@
 import { extractSnapshot } from '../lib/scraper';
 import { extractForm, applyFills, fillByLabel } from '../lib/form';
+import { runStep } from '../lib/combobox';
 import type { RuntimeMessage } from '../lib/protocol';
 
 /**
@@ -38,6 +39,12 @@ export default defineContentScript({
             kind: 'FILLS_APPLIED',
             written: applyFills(document, message.fills),
           });
+        case 'COMBOBOX_STEP':
+          // The only asynchronous handler here: a widget re-renders when its
+          // framework decides to, so the step awaits the result.
+          return runStep(document, message.step).then(
+            (reply): RuntimeMessage => ({ kind: 'COMBOBOX_REPLY', reply }),
+          );
         default:
           return undefined;
       }

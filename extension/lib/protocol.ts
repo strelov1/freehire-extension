@@ -84,6 +84,33 @@ export interface FillOutcome {
   status: FillStatus;
 }
 
+/**
+ * One step of driving a custom-widget combobox. The wire exposes four separate
+ * primitives (`combobox.open` / `.options` / `.select` / `.verify`) because the
+ * agent composes them one at a time; inside the extension they travel as one
+ * message discriminated by `action`, so addressing a widget across the tab's
+ * frames is written once rather than four near-identical times.
+ *
+ * `value` is the option in play: the one to commit for `select`, the one whose
+ * commit is being confirmed for `verify`, and empty for the two that only read.
+ */
+export interface ComboboxStep {
+  action: 'open' | 'options' | 'select' | 'verify';
+  label: string;
+  value: string;
+}
+
+/**
+ * What a step reports back. `status` is the step's own vocabulary (see
+ * `lib/combobox.ts`); the extra fields travel only for the steps that produce
+ * them — `options` for a read, `committed` for a verification.
+ */
+export interface ComboboxReply {
+  status: string;
+  options?: string[];
+  committed?: string;
+}
+
 /** Messages passed inside the extension via chrome.runtime. */
 export type RuntimeMessage =
   | { kind: 'GET_PAGE_SNAPSHOT' }
@@ -97,7 +124,11 @@ export type RuntimeMessage =
   | { kind: 'GET_FRAMED_FORM' }
   | { kind: 'FRAMED_FORM'; fields: FramedField[] }
   | { kind: 'FILL_BY_LABEL'; fills: LabelFill[] }
-  | { kind: 'FILL_OUTCOMES'; outcomes: FillOutcome[] };
+  | { kind: 'FILL_OUTCOMES'; outcomes: FillOutcome[] }
+  // Driving a custom-widget combobox: one step, offered to every frame, since
+  // only the frame holding the widget can answer for it.
+  | { kind: 'COMBOBOX_STEP'; step: ComboboxStep }
+  | { kind: 'COMBOBOX_REPLY'; reply: ComboboxReply };
 
 /** An empty snapshot, used when no active tab can be read. */
 export function emptySnapshot(): PageSnapshot {

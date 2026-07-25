@@ -258,24 +258,31 @@ describe('fillByLabel', () => {
   });
 });
 
-/** A fieldset asking one question through several controls. */
-function checkboxGroup(legendText: string, optionLabels: string[], type = 'checkbox') {
-  const fieldset = document.createElement('fieldset');
-  const legend = document.createElement('legend');
-  legend.textContent = legendText;
-  fieldset.append(legend);
-  const inputs = optionLabels.map((text, i) => {
-    const id = `${legendText.slice(0, 4).replace(/\W/g, '')}-${i}`;
+let uniqueId = 0;
+
+/** Labelled controls of one kind, appended to `parent`. */
+function optionControls(parent: Element, optionLabels: string[], type: string, name: string) {
+  return optionLabels.map((text) => {
+    const id = `opt-${uniqueId++}`;
     const label = document.createElement('label');
     label.setAttribute('for', id);
     label.textContent = text;
     const input = document.createElement('input');
     input.id = id;
     input.type = type;
-    input.name = 'question_65731119[]';
-    fieldset.append(label, input);
+    input.name = name;
+    parent.append(label, input);
     return input;
   });
+}
+
+/** A fieldset asking one question through several controls. */
+function checkboxGroup(legendText: string, optionLabels: string[], type = 'checkbox', name = `q${uniqueId}[]`) {
+  const fieldset = document.createElement('fieldset');
+  const legend = document.createElement('legend');
+  legend.textContent = legendText;
+  fieldset.append(legend);
+  const inputs = optionControls(fieldset, optionLabels, type, name);
   document.body.append(fieldset);
   return inputs;
 }
@@ -361,6 +368,55 @@ describe('extractForm grouping', () => {
     expect(extractForm(document).map((f) => f.label)).toEqual(['Germany', 'Poland']);
   });
 
+  it('keeps two questions apart when one fieldset holds both', () => {
+    // A shared "Demographic Questions" legend over two unrelated questions.
+    // Grouping on the fieldset alone would merge them into one field offering
+    // all four options, and the second question would become unanswerable.
+    const fieldset = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'Demographic Questions';
+    fieldset.append(legend);
+    optionControls(fieldset, ['Yes', 'No'], 'radio', 'veteran');
+    optionControls(fieldset, ['Germany', 'Poland'], 'checkbox', 'countries[]');
+    document.body.append(fieldset);
+
+    const fields = extractForm(document);
+
+    expect(fields).toHaveLength(2);
+    expect(fields.map((f) => f.options)).toEqual([
+      ['Yes', 'No'],
+      ['Germany', 'Poland'],
+    ]);
+  });
+
+  it('groups a labelled container that is not a fieldset', () => {
+    const heading = document.createElement('h3');
+    heading.id = 'q-visa';
+    heading.textContent = 'Do you now or will you require sponsorship?';
+    const group = document.createElement('div');
+    group.setAttribute('role', 'radiogroup');
+    group.setAttribute('aria-labelledby', 'q-visa');
+    optionControls(group, ['Yes', 'No'], 'radio', 'visa');
+    document.body.append(heading, group);
+
+    const fields = extractForm(document);
+
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({
+      label: 'Do you now or will you require sponsorship?',
+      options: ['Yes', 'No'],
+    });
+  });
+
+  it('leaves an unlabelled container ungrouped, having no question to carry', () => {
+    const group = document.createElement('div');
+    group.setAttribute('role', 'radiogroup');
+    optionControls(group, ['Yes', 'No'], 'radio', 'visa');
+    document.body.append(group);
+
+    expect(extractForm(document).map((f) => f.label)).toEqual(['Yes', 'No']);
+  });
+
   it('keeps index and control in lockstep once a group has collapsed the field list', () => {
     // The group sits *before* a plain field, so a stale index space would send
     // the email into one of the group's checkboxes.
@@ -386,6 +442,54 @@ describe('fillByLabel on a group', () => {
     expect(poland.checked).toBe(true);
     expect(germany.checked).toBe(false);
     expect(outcomes).toEqual([{ label: 'Which countries?', status: 'filled' }]);
+  });
+
+  it('accepts back the joined value it reported, ticking every named option', () => {
+    const [germany, poland, spain] = checkboxGroup('Which countries?', ['Germany', 'Poland', 'Spain']);
+
+    const outcomes = fillByLabel(document, [{ label: 'Which countries?', value: 'Germany, Spain' }]);
+
+    expect([germany.checked, poland.checked, spain.checked]).toEqual([true, false, true]);
+    expect(outcomes).toEqual([{ label: 'Which countries?', status: 'filled' }]);
+  });
+
+  it("prefers an option's own comma to a list separator", () => {
+    // Splitting first would look for "Korea" and "Republic of", find neither,
+    // and refuse a question the group does in fact offer.
+    const [korea] = checkboxGroup('Which countries?', ['Korea, Republic of', 'Japan']);
+
+    fillByLabel(document, [{ label: 'Which countries?', value: 'Korea, Republic of' }]);
+
+    expect(korea.checked).toBe(true);
+  });
+
+  it('ticks nothing when only some of the named options are offered', () => {
+    const inputs = checkboxGroup('Which countries?', ['Germany', 'Poland']);
+
+    const outcomes = fillByLabel(document, [{ label: 'Which countries?', value: 'Germany, Norfolk Island' }]);
+
+    expect(inputs.some((i) => i.checked)).toBe(false);
+    expect(outcomes).toEqual([{ label: 'Which countries?', status: 'no_option' }]);
+  });
+
+  it("leaves the user's own choice alone rather than clearing it", () => {
+    const [germany, poland] = checkboxGroup('Which countries?', ['Germany', 'Poland']);
+    poland.checked = true;
+
+    fillByLabel(document, [{ label: 'Which countries?', value: 'Germany' }]);
+
+    expect(germany.checked).toBe(true);
+    expect(poland.checked).toBe(true);
+  });
+
+  it('lets a radio group hold one answer, unchecking the sibling the browser clears', () => {
+    const [yes, no] = checkboxGroup('Do you require sponsorship?', ['Yes', 'No'], 'radio', 'visa');
+    yes.checked = true;
+
+    fillByLabel(document, [{ label: 'Do you require sponsorship?', value: 'No' }]);
+
+    expect(no.checked).toBe(true);
+    expect(yes.checked).toBe(false);
   });
 
   it('leaves the group untouched when the option is not one it offers', () => {

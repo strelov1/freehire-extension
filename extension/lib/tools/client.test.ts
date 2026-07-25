@@ -5,6 +5,7 @@ import type { PageBridge } from './executor';
 const page: PageBridge = {
   readForm: async () => [],
   fillSimple: async (fills) => fills.map((f) => ({ label: f.label, status: 'filled' as const })),
+  combobox: async () => ({ status: 'not_found' }),
 };
 
 describe('respondTo', () => {

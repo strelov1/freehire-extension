@@ -44,7 +44,8 @@ export interface Question {
 /** The ordered list of questions — the index space for observe + act. */
 export function collectQuestions(doc: Document): Question[] {
   const questions: Question[] = [];
-  const byFieldset = new Map<Element, Question>();
+  const groups: Question[] = [];
+  const byContainer = new Map<Element, Map<string, Question>>();
 
   for (const el of collectFillable(doc)) {
     const group = groupOf(el);
@@ -52,20 +53,29 @@ export function collectQuestions(doc: Document): Question[] {
       questions.push({ label: extractLabel(el), controls: [el] });
       continue;
     }
-    const open = byFieldset.get(group.fieldset);
+    let inContainer = byContainer.get(group.container);
+    if (!inContainer) {
+      inContainer = new Map();
+      byContainer.set(group.container, inContainer);
+    }
+    const open = inContainer.get(group.key);
     if (open) {
       open.controls.push(el);
-    } else {
-      const question: Question = { label: group.question, controls: [el] };
-      byFieldset.set(group.fieldset, question);
-      questions.push(question);
+      continue;
     }
+    const question: Question = { label: group.question, controls: [el] };
+    inContainer.set(group.key, question);
+    questions.push(question);
+    groups.push(question);
   }
 
   // A group of one is not a group: a lone "I agree to the terms" checkbox under
   // a `Consent` legend is already its own question, and carrying the legend
   // instead of its label would lose what the user is agreeing to.
-  return questions.map((q) => (q.controls.length > 1 ? q : { label: extractLabel(q.controls[0]), controls: q.controls }));
+  for (const group of groups) {
+    if (group.controls.length === 1) group.label = extractLabel(group.controls[0]);
+  }
+  return questions;
 }
 
 /**
@@ -74,17 +84,39 @@ export function collectQuestions(doc: Document): Question[] {
  * Deliberately narrow, because over-grouping hides fields from the agent while
  * under-grouping only makes the report long. The control must be a checkbox or
  * radio — an `Address` fieldset's text inputs are separate questions despite the
- * shared legend — and the fieldset must carry a legend, since without one there
- * is no question text to report.
+ * shared legend — and its container must be labelled, since without a label
+ * there is no question text to report.
+ *
+ * `key` splits a container that holds more than one question: a
+ * "Demographic Questions" fieldset wrapping both a Yes/No radio pair and a
+ * country checklist asks two things, and merging them would offer all the options
+ * at once and leave the second question unanswerable. Controls answering together
+ * share a `name` and a type, which is how the live forms mark them.
  */
-function groupOf(el: Fillable): { fieldset: Element; question: string } | null {
+function groupOf(el: Fillable): { container: Element; question: string; key: string } | null {
   if (!(el instanceof HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio')) return null;
-  const fieldset = el.closest('fieldset');
-  if (!fieldset) return null;
+  const labelled = labelledContainer(el);
+  return labelled ? { ...labelled, key: `${el.type} ${el.name}` } : null;
+}
 
-  const legend = Array.from(fieldset.children).find((c) => c.tagName === 'LEGEND');
-  const question = legend?.textContent?.replace(/\s+/g, ' ').trim();
-  return question ? { fieldset, question } : null;
+/** The nearest container that states the question its controls answer. */
+function labelledContainer(el: Element): { container: Element; question: string } | null {
+  const fieldset = el.closest('fieldset');
+  if (fieldset) {
+    const legend = Array.from(fieldset.children).find((c) => c.tagName === 'LEGEND');
+    const question = collapse(legend?.textContent);
+    if (question) return { container: fieldset, question };
+  }
+  // The same structure without a fieldset: ARIA's own way of saying "these
+  // controls answer one question".
+  const group = el.closest('[role="group"], [role="radiogroup"]');
+  if (group) {
+    const question =
+      textFromIds(el.ownerDocument, group.getAttribute('aria-labelledby')) ||
+      collapse(group.getAttribute('aria-label'));
+    if (question) return { container: group, question };
+  }
+  return null;
 }
 
 /**
@@ -150,17 +182,45 @@ function describeQuestion({ label, controls }: Question, index: number): FormFie
  * that is closed — the agent reaches for `combobox.open` in that case.
  */
 export function comboOptions(el: Element): string[] {
-  const listbox = ownListbox(el);
-  if (!listbox) return [];
-  return Array.from(listbox.querySelectorAll('[role="option"]'))
-    .map((o) => (o.textContent ?? '').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  return comboOptionNodes(el).map(collapseText).filter(Boolean);
 }
 
-/** The listbox a widget declares as its own, or null when it has none open. */
-function ownListbox(el: Element): Element | null {
-  const id = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
-  return id ? el.ownerDocument.getElementById(id) : null;
+/**
+ * The option elements a widget is offering, for a caller that must click one.
+ * Options the user cannot see are left out, on the same grounds as hidden
+ * controls: a widget keeping a stale list behind `display:none` is not offering
+ * it, and neither reading nor clicking it would be honest.
+ */
+export function comboOptionNodes(el: Element): Element[] {
+  const listbox = comboListbox(el);
+  if (!listbox) return [];
+  return Array.from(listbox.querySelectorAll('[role="option"]')).filter(isOnScreen);
+}
+
+/**
+ * The listbox a widget declares as its own, or null when it names none.
+ *
+ * `aria-controls` is an id *list*, and a widget may well point at a live-region
+ * status node alongside its listbox — so the ids are resolved individually and
+ * the one that actually looks like a listbox wins. Resolving the whole attribute
+ * as a single id finds nothing, which would report an open widget as offering
+ * no options.
+ */
+export function comboListbox(el: Element): Element | null {
+  const ids = (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '').split(/\s+/).filter(Boolean);
+  const named = ids.map((id) => el.ownerDocument.getElementById(id)).filter((node): node is HTMLElement => !!node);
+  const listbox = named.find((n) => n.getAttribute('role') === 'listbox' || n.querySelector('[role="option"]'));
+  return listbox ?? named[0] ?? null;
+}
+
+function collapseText(el: Element): string {
+  return collapse(el.textContent);
+}
+
+/** True when the element is on screen for the user; see `isHidden`. */
+function isOnScreen(el: Element): boolean {
+  if (el.closest('[hidden]')) return false;
+  return typeof el.checkVisibility !== 'function' || el.checkVisibility();
 }
 
 /**
@@ -187,22 +247,26 @@ function extractLabel(el: Fillable): string {
     .join(' ');
   if (fromLabels) return fromLabels;
 
-  const labelledBy = el.getAttribute('aria-labelledby');
-  if (labelledBy) {
-    const text = labelledBy
-      .split(/\s+/)
-      .map((id) => el.ownerDocument.getElementById(id)?.textContent?.trim() ?? '')
-      .filter(Boolean)
-      .join(' ');
-    if (text) return text;
-  }
-
   return (
-    el.getAttribute('aria-label')?.trim() ||
-    el.getAttribute('placeholder')?.trim() ||
-    el.getAttribute('name')?.trim() ||
-    ''
+    textFromIds(el.ownerDocument, el.getAttribute('aria-labelledby')) ||
+    collapse(el.getAttribute('aria-label')) ||
+    collapse(el.getAttribute('placeholder')) ||
+    collapse(el.getAttribute('name'))
   );
+}
+
+/** The joined text of the elements an `aria-labelledby`-style id list names. */
+function textFromIds(doc: Document, ids: string | null): string {
+  if (!ids) return '';
+  return ids
+    .split(/\s+/)
+    .map((id) => collapse(doc.getElementById(id)?.textContent))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function collapse(text: string | null | undefined): string {
+  return (text ?? '').replace(/\s+/g, ' ').trim();
 }
 
 /** Canonical profile keys and the label synonyms that map to them. */
@@ -270,15 +334,40 @@ export function fillByLabel(doc: Document, fills: LabelFill[]): FillOutcome[] {
 }
 
 /**
- * Answers one question. A group is answered by ticking the control whose own
- * label is the chosen option; an option the group does not offer leaves it
- * untouched, so a wrong choice is reported rather than approximated.
+ * Answers one question. A group is answered by ticking the controls whose own
+ * labels are the chosen options; if any of them is not on offer, nothing is
+ * ticked, so a wrong choice is reported rather than half-applied.
+ *
+ * Ticking only, never clearing: a group may already carry an answer the user
+ * chose by hand, and autofill has no business undoing it.
  */
 function answerQuestion({ controls }: Question, value: string): boolean {
   if (controls.length === 1) return fillField(controls[0], value);
-  const chosen = controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(value));
+
+  const chosen = chosenOptions(controls, value);
   if (!chosen) return false;
-  return fillField(chosen, 'true');
+  for (const control of chosen) fillField(control, 'true');
+  return true;
+}
+
+/**
+ * The controls a group's requested value names, or null when it names one the
+ * group does not offer.
+ *
+ * A group reports every chosen option as one comma-joined value, so it must
+ * accept that value back. The whole string is matched as a single option first,
+ * since an option may carry a comma of its own — "Korea, Republic of" is one
+ * country, not two the group has never heard of.
+ */
+function chosenOptions(controls: Fillable[], value: string): Fillable[] | null {
+  const offering = (text: string) => controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(text));
+
+  const whole = offering(value);
+  if (whole) return [whole];
+
+  const parts = value.split(',').filter((part) => part.trim());
+  const named = parts.map(offering).filter((c): c is Fillable => !!c);
+  return named.length === parts.length ? named : null;
 }
 
 /** Writes one control, dispatching native events. Returns false if unfillable. */

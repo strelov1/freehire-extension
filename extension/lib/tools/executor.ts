@@ -6,7 +6,7 @@
  * a browser.
  */
 
-import type { LabelFill, FillOutcome, FillStatus } from '../protocol';
+import type { LabelFill, FillOutcome, FillStatus, ComboboxStep, ComboboxReply } from '../protocol';
 import type { FramedField, ToolCall, ToolResult } from './wire';
 
 /** Whatever can read and write the page the user is looking at. */
@@ -15,7 +15,17 @@ export interface PageBridge {
   readForm(): Promise<FramedField[]>;
   /** Applies the fills across the page's frames, one outcome per requested fill. */
   fillSimple(fills: LabelFill[]): Promise<FillOutcome[]>;
+  /** Runs one step against the widget, wherever in the page's frames it lives. */
+  combobox(step: ComboboxStep): Promise<ComboboxReply>;
 }
+
+/** The wire's combobox tools, and the step each one runs. */
+const COMBOBOX_TOOLS: Record<string, ComboboxStep['action']> = {
+  'combobox.open': 'open',
+  'combobox.options': 'options',
+  'combobox.select': 'select',
+  'combobox.verify': 'verify',
+};
 
 /**
  * Runs one tool call. Never throws: an unknown tool, bad arguments, or a failing
@@ -31,8 +41,11 @@ export async function executeTool(call: ToolCall, page: PageBridge): Promise<Too
         const fills = readFills(call.args);
         return { id: call.id, result: { outcomes: await page.fillSimple(fills) } };
       }
-      default:
-        return { id: call.id, error: `unknown tool: ${call.tool}` };
+      default: {
+        const action = COMBOBOX_TOOLS[call.tool];
+        if (!action) return { id: call.id, error: `unknown tool: ${call.tool}` };
+        return { id: call.id, result: await page.combobox(readComboboxStep(action, call.args)) };
+      }
     }
   } catch (err) {
     return { id: call.id, error: err instanceof Error ? err.message : String(err) };
@@ -48,6 +61,28 @@ function readFills(args: Record<string, unknown> | undefined): LabelFill[] {
     if (typeof label !== 'string' || !label) throw new Error('every fill needs a non-empty label');
     return { label, value: typeof value === 'string' ? value : String(value ?? '') };
   });
+}
+
+/**
+ * Validates a combobox call's arguments. `select` and `verify` need the option in
+ * play — a blank would either commit nothing or confirm nothing, both of which
+ * are better refused than reported as a result.
+ */
+function readComboboxStep(action: ComboboxStep['action'], args: Record<string, unknown> | undefined): ComboboxStep {
+  const { label, value } = args ?? {};
+  if (typeof label !== 'string' || !label) throw new Error(`combobox.${action} requires args.label`);
+  if ((action === 'select' || action === 'verify') && (typeof value !== 'string' || !value)) {
+    throw new Error(`combobox.${action} requires args.value: the option in play`);
+  }
+  return { action, label, value: typeof value === 'string' ? value : '' };
+}
+
+/**
+ * Folds the frames' answers into one. A widget lives in exactly one frame, so
+ * every other frame reports `not_found` and the one informative answer wins.
+ */
+export function mergeComboboxReplies(replies: ComboboxReply[]): ComboboxReply {
+  return replies.find((r) => r.status !== 'not_found') ?? { status: 'not_found' };
 }
 
 // A frame that does not contain the field reports `not_found`, so across frames

@@ -4,8 +4,10 @@ import {
   type FramedField,
   type LabelFill,
   type FillOutcome,
+  type ComboboxStep,
+  type ComboboxReply,
 } from '../lib/protocol';
-import { mergeFrameOutcomes } from '../lib/tools/executor';
+import { mergeComboboxReplies, mergeFrameOutcomes } from '../lib/tools/executor';
 
 /**
  * Service worker. Three jobs, all thin:
@@ -31,6 +33,8 @@ export default defineBackground(() => {
         return readFramedForm();
       case 'FILL_BY_LABEL':
         return fillAcrossFrames(message.fills);
+      case 'COMBOBOX_STEP':
+        return comboboxAcrossFrames(message.step);
       default:
         return undefined;
     }
@@ -69,6 +73,19 @@ async function fillAcrossFrames(fills: LabelFill[]): Promise<RuntimeMessage> {
     if (reply?.kind === 'FILL_OUTCOMES') perFrame.push(reply.outcomes);
   });
   return { kind: 'FILL_OUTCOMES', outcomes: mergeFrameOutcomes(perFrame) };
+}
+
+/**
+ * Offers one widget step to every frame. The widget lives in exactly one of
+ * them, so every other frame answers `not_found` and the merge keeps the frame
+ * that actually holds it.
+ */
+async function comboboxAcrossFrames(step: ComboboxStep): Promise<RuntimeMessage> {
+  const replies: ComboboxReply[] = [];
+  await eachFrame({ kind: 'COMBOBOX_STEP', step }, (reply) => {
+    if (reply?.kind === 'COMBOBOX_REPLY') replies.push(reply.reply);
+  });
+  return { kind: 'COMBOBOX_REPLY', reply: mergeComboboxReplies(replies) };
 }
 
 /** Sends a message to each injectable frame of the active tab, in parallel. */
