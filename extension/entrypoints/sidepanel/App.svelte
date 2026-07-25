@@ -15,6 +15,8 @@
     getMatchText,
     getAutofillProfile,
     runAgentAutofill,
+    resolveJob,
+    resolveNotice,
     type FreehireJob,
     type JobMatch,
     type AutofillProfile,
@@ -141,6 +143,41 @@
     } catch (err) {
       matchError = err instanceof Error ? err.message : 'Could not load match';
       matchStatus = 'error';
+    }
+  }
+
+  // The page resolved to no catalog posting: either nothing to show, or the ad-hoc text
+  // match, which carries no slug. That is when freehire has something to gain from being
+  // handed the page.
+  let unknownPage = $derived(
+    matchStatus === 'empty' || (matchStatus === 'ready' && matchJob?.public_slug === ''),
+  );
+  let contributing = $state(false);
+
+  /**
+   * Hands the current page to freehire. The server imports the vacancy when a link-source
+   * adapter can read the page and queues the link for a maintainer when none can; either
+   * way the panel says what happened, and a resolved slug re-runs the match so the curated
+   * card replaces the ad-hoc one.
+   */
+  async function contributePage() {
+    const token = await getToken();
+    if (!token || contributing) return;
+    contributing = true;
+    try {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      const url = tab?.url ?? '';
+      if (!url) {
+        notices.push('No page to add.');
+        return;
+      }
+      const resolved = await resolveJob(url, token);
+      notices.push(resolveNotice(resolved.status));
+      if (resolved.public_slug) await loadMatch();
+    } catch (err) {
+      notices.push(`Could not add this page: ${err instanceof Error ? err.message : 'error'}`);
+    } finally {
+      contributing = false;
     }
   }
 
@@ -459,6 +496,14 @@
       <p class="match-hint">
         Open a job posting to see your match.
         <button class="link" onclick={loadMatch}>Refresh</button>
+      </p>
+    {/if}
+    {#if unknownPage}
+      <p class="match-hint">
+        freehire doesn't have this posting.
+        <button class="link" onclick={contributePage} disabled={contributing}>
+          {contributing ? 'Adding…' : 'Add to freehire'}
+        </button>
       </p>
     {/if}
   {/if}

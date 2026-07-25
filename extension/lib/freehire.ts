@@ -116,6 +116,37 @@ export function runAgentAutofill(token: string): Promise<AutofillReport> {
   return postData<AutofillReport>('/api/v1/me/autofill/run', {}, token);
 }
 
+/** What the server did with a page we offered it. */
+export type ResolveStatus = 'found' | 'imported' | 'queued';
+
+export interface ResolvedPage {
+  public_slug: string | null;
+  status: ResolveStatus;
+}
+
+/**
+ * Offers the page to freehire: the server answers with the catalog posting for it,
+ * importing the vacancy when it can read the page and queueing the link for a
+ * maintainer when it cannot. Authenticated — it makes the server fetch the URL.
+ */
+export function resolveJob(url: string, token: string): Promise<ResolvedPage> {
+  return postData<ResolvedPage>('/api/v1/jobs/resolve', { url }, token);
+}
+
+/** The sentence the panel shows for each outcome. Pure. */
+export function resolveNotice(status: ResolveStatus): string {
+  switch (status) {
+    case 'imported':
+      return '✓ Added to freehire — here is your match.';
+    case 'found':
+      return 'freehire already had this posting — here is your match.';
+    case 'queued':
+      return "We could not read this page, so we'll have a look at the link.";
+    default:
+      return 'Sent this page to freehire.';
+  }
+}
+
 /**
  * Resolves the page's URL to a freehire catalog slug, or null when the posting
  * is not one we carry (or is on an ATS the server cannot yet read a job id
