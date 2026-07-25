@@ -1,0 +1,26 @@
+## 1. hire transport (relay)
+
+- [ ] 1.1 Add a JWT-authenticated WebSocket relay in hire: authenticate the connection from the session JWT; register the connection under its user (`sub`); forward `{id,tool,args}` / `{id,result}` frames between that user's harness and extension ends. Owner-scoped — never bridge across users.
+- [ ] 1.2 Reject unauthenticated connections; return an error result (never hang) when a call's counterpart end is absent.
+- [ ] 1.3 Tests: authed round-trip forwards a call+result; cross-user isolation; unauthenticated rejected; missing-counterpart returns an error result.
+
+## 2. extension browser-tool executor
+
+- [ ] 2.1 Wire client (side panel / background): connect to the hire relay with the stored JWT, reconnect on drop, dispatch inbound `{id,tool,args}` to handlers and return `{id,result}`.
+- [ ] 2.2 `read_form` primitive: reuse `form.ts` `extractForm`; return fields with label / type / value / `combo` flag, iframe-aware; unit-test the label extraction + combo flag.
+- [ ] 2.3 `fill_simple` primitive: address by **label**, match + write atomically (text/textarea/checkbox/native-select) via `applyFills` native-event dispatch; **skip** custom-widget comboboxes (report deferred); unit-test label matching, no-drift, and combobox-skip.
+
+## 3. agent driver (map + fill)
+
+- [ ] 3.1 Fetch the signed-in user's profile (reuse hire `/me/autofill-profile`); the agent builds a `{label → value}` plan for standard fields, leaving unmapped fields out (no fabricated values).
+- [ ] 3.2 Drive the turn: `read_form` → plan → `fill_simple` over the wire; report what was filled and which comboboxes are not-yet-supported.
+
+## 4. panel wiring
+
+- [ ] 4.1 Route the panel's Autofill action through the agent path (read_form → plan → fill_simple), keeping the deterministic autofill as a fallback until the agent path is proven.
+- [ ] 4.2 Surface the result (filled fields; comboboxes reported as not-yet-fillable) and errors.
+
+## 5. Verify
+
+- [ ] 5.1 Extension: `vitest run` + `svelte-check` + `wxt build`; hire: relay tests green.
+- [ ] 5.2 Live end-to-end: on a real apply form, the agent fills the standard fields through the wire; comboboxes are reported, not corrupted.
