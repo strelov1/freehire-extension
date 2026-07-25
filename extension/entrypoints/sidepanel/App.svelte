@@ -9,7 +9,6 @@
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
-    guessJobIdentity,
     findJob,
     getJob,
     getMatch,
@@ -122,12 +121,11 @@
         return;
       }
 
-      // Any other page: read it, try to recognise it as a catalog job (curated
-      // card), else match against the scraped posting text.
-      const snap = await readSnapshot();
+      // Any other page: recognise it as a catalog job from its URL (curated
+      // card), else read the page and match against the scraped posting text.
+      const catalogSlug = await findJob(url, token);
+      const snap = catalogSlug ? null : await readSnapshot();
       const headline = snap?.headline || snap?.title || '';
-      const { company, title } = guessJobIdentity(url, headline);
-      const catalogSlug = company && title ? await findJob(company, title, token) : null;
 
       if (catalogSlug) {
         await loadCatalog(catalogSlug, token);

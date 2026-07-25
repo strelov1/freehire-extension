@@ -19,33 +19,6 @@ export function freehireSlugFromUrl(rawUrl: string): string | null {
   return m ? m[1] : null;
 }
 
-/**
- * Best-effort (company, title) for an arbitrary job page, used to look the
- * posting up in the freehire catalog. Pure. Company comes from a greenhouse
- * `?for=` hint or a "<title> at <Company>" headline; title strips common apply
- * prefixes and the trailing "at <Company>".
- */
-export function guessJobIdentity(
-  rawUrl: string,
-  headline: string,
-): { company: string; title: string } {
-  let company = '';
-  try {
-    company = new URL(rawUrl).searchParams.get('for') ?? '';
-  } catch {
-    // ignore unparseable URL
-  }
-
-  let title = (headline ?? '').trim();
-  title = title.replace(/^(job application for|application for|apply (?:for|to))\s+/i, '');
-  const at = title.match(/^(.*?)\s+at\s+(.+)$/i);
-  if (at) {
-    title = at[1].trim();
-    if (!company) company = at[2].trim();
-  }
-  return { company: company.trim(), title: title.trim() };
-}
-
 /** freehire's company-logo proxy URL for a company name (404s → placeholder). */
 export function companyLogoUrl(company: string): string | null {
   const c = company.trim();
@@ -143,9 +116,17 @@ export function runAgentAutofill(token: string): Promise<AutofillReport> {
   return postData<AutofillReport>('/api/v1/me/autofill/run', {}, token);
 }
 
-/** Resolves a posting to a freehire catalog slug by company + title, or null. */
-export async function findJob(company: string, title: string, token: string): Promise<string | null> {
-  const q = `company=${encodeURIComponent(company)}&title=${encodeURIComponent(title)}`;
-  const found = await getData<{ public_slug: string } | null>(`/api/v1/jobs/find?${q}`, token);
+/**
+ * Resolves the page's URL to a freehire catalog slug, or null when the posting
+ * is not one we carry (or is on an ATS the server cannot yet read a job id
+ * from). The server matches on the posting's own identity in the URL; it used to
+ * take a company and a guessed title, which was both unreliable and slow enough
+ * to time out.
+ */
+export async function findJob(url: string, token: string): Promise<string | null> {
+  const found = await getData<{ public_slug: string } | null>(
+    `/api/v1/jobs/find?url=${encodeURIComponent(url)}`,
+    token,
+  );
   return found?.public_slug ?? null;
 }
