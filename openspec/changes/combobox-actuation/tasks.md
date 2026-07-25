@@ -34,9 +34,23 @@
 
 ## 4. Agent loop
 
-- [ ] 4.1 For each widget field in the plan: open → options → choose the option the profile justifies → select → verify. An unverified write is reported as not filled.
-- [ ] 4.2 Grounding applies to the chosen option exactly as to a typed value; a question the profile does not answer selects nothing.
-- [ ] 4.3 The report names each grouped question once, and distinguishes filled / not-yet-fillable / left-for-you.
+> Done in `hire` on `feat/combobox-agent-loop` (unpushed). Like group 3, no
+> reviewed-clean stamp: the review pass was cancelled before it reported.
+>
+> **Scope note.** This group puts the loop in hire, per design.md's "the loop
+> lives with the agent, in hire". That decision was since revisited: the user also
+> wants a *local* harness, connected with `freehire-cli`'s API key, able to drive
+> the filling itself. Both paths are wanted, so this group stands as the hosted
+> path and the harness end is a separate change. The wire needs nothing either
+> way — the relay forwards frames verbatim, so the primitives groups 1-3 shipped
+> already serve any harness that connects.
+
+- [x] 4.1 For each widget field in the plan: open → options → choose the option the profile justifies → select → verify. An unverified write is reported as not filled.
+      Choosing had to become a *second* model call rather than part of the plan: no widget renders options until opened (measured — not one of the two forms' 40 comboboxes carries a list while closed), so the plan cannot name a value it has never seen. It names which widgets are worth opening; the choice is made against the list read from the page. Only `verified` counts as filled.
+- [x] 4.2 Grounding applies to the chosen option exactly as to a typed value; a question the profile does not answer selects nothing.
+      Applying the *existing* filter unchanged turned out to be wrong: it compared raw substrings both ways, and a widget's options are short — `no` sits inside `norway`, so a candidate living in Oslo would have "No" grounded for any question at all. That is this change's own failure mode one layer down. Grounding now matches whole words, in both directions, which still accepts "Germany" from "Berlin, Germany" and no longer accepts "No" from Norway.
+- [x] 4.3 The report names each grouped question once, and distinguishes filled / not-yet-fillable / left-for-you.
+      A grouped question arrives from `read_form` as one field, so it is named once for free. The three-way split is now a named function: filled (a confirmed commit), not-fillable-yet (would not open, committed something else, or offers its options only over the network), and left-for-you (the profile does not answer it, or the answer it suggests is not on offer).
 
 ## 5. Verify
 
