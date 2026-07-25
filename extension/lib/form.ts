@@ -7,7 +7,7 @@
  * shipping DOM nodes across the content↔panel boundary.
  */
 
-import type { FieldTag, FormField, Fill } from './protocol';
+import type { FieldTag, FormField, Fill, LabelFill, FillOutcome } from './protocol';
 
 type Fillable = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
@@ -36,12 +36,29 @@ export function extractForm(doc: Document): FormField[] {
       name: el.getAttribute('name') ?? '',
       required: el.required,
       value: el.value ?? '',
+      combo: isComboWidget(el),
     };
     if (el instanceof HTMLSelectElement) {
       field.options = Array.from(el.options).map((o) => (o.textContent ?? '').trim());
     }
     return field;
   });
+}
+
+/**
+ * True when the control is the text input of a custom dropdown widget
+ * (react-select and friends) rather than a plain field. Such a widget ignores a
+ * written value and commits whatever its own listbox highlights — the spike's
+ * "Norfolk Island instead of No" failure — so the simple filler must skip it.
+ * Detected by the ARIA the widgets expose; a native <select> is never one.
+ */
+export function isComboWidget(el: Fillable): boolean {
+  if (el instanceof HTMLSelectElement) return false;
+  return (
+    el.getAttribute('role') === 'combobox' ||
+    el.hasAttribute('aria-autocomplete') ||
+    el.getAttribute('aria-haspopup') === 'listbox'
+  );
 }
 
 /** Best-effort human label for a control, in decreasing reliability. */
@@ -86,9 +103,17 @@ const FIELD_SYNONYMS: Record<string, string[]> = {
   portfolio: ['portfolio', 'website', 'personal site'],
 };
 
+/**
+ * Comparison form of a label: case-, whitespace- and required-marker-insensitive,
+ * so "First Name *" and "first name" address the same control.
+ */
+export function normalizeLabel(label: string): string {
+  return label.toLowerCase().replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+}
+
 /** Maps a control's label to a canonical profile key, or null when unknown. */
 export function matchFieldKey(label: string): string | null {
-  const normalized = label.toLowerCase().replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+  const normalized = normalizeLabel(label);
   if (!normalized) return null;
   for (const [key, synonyms] of Object.entries(FIELD_SYNONYMS)) {
     if (synonyms.some((s) => normalized === s || normalized.includes(s))) return key;
@@ -107,8 +132,30 @@ export function applyFills(doc: Document, fills: Fill[]): number {
   return written;
 }
 
+/**
+ * Writes values into the controls carrying the given labels, in one pass:
+ * the page is read and written inside a single synchronous walk, so a re-render
+ * between an agent's observation and its fills cannot drift the target the way a
+ * positional index does. Every requested fill gets an outcome; custom-widget
+ * comboboxes are reported as deferred rather than written into.
+ */
+export function fillByLabel(doc: Document, fills: LabelFill[]): FillOutcome[] {
+  const controls = collectFillable(doc);
+  return fills.map(({ label, value }) => {
+    const el = controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(label));
+    if (!el) return { label, status: 'not_found' as const };
+    if (isComboWidget(el)) return { label, status: 'deferred_combobox' as const };
+    return { label, status: fillField(el, value) ? ('filled' as const) : ('no_option' as const) };
+  });
+}
+
 /** Writes one control, dispatching native events. Returns false if unfillable. */
 export function fillField(el: Fillable, value: string): boolean {
+  if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) {
+    el.checked = value === 'true' || value === '1' || normalizeLabel(value) === 'yes';
+    dispatchNative(el);
+    return true;
+  }
   if (el instanceof HTMLSelectElement) {
     const match = Array.from(el.options).find(
       (o) =>

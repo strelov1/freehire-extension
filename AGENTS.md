@@ -50,6 +50,9 @@ extension/            WXT + Svelte MV3 extension
     roy/              Roy control-protocol client: wire, client (RoyClient),
                       chat reducer, session bootstrap (+ tests). Ported from the
                       freehire web assistant; auth diverges (Bearer + subprotocol).
+    tools/            browser-tool executor: the wire contract, the executeTool
+                      dispatch (+ tests), the ToolChannel socket to hire's relay,
+                      and the PageBridge that reaches the tab's frames.
     auth.ts           "Sign in with freehire" (launchWebAuthFlow) + token storage
     freehire.ts       hire API reads (job, match, autofill profile)
     protocol.ts       in-extension RuntimeMessage contract (+ test)

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { extractForm, matchFieldKey, applyFills } from './form';
+import { extractForm, matchFieldKey, applyFills, fillByLabel } from './form';
 
 function reset() {
   document.body.replaceChildren();
@@ -76,6 +76,107 @@ describe('applyFills', () => {
     expect(first.value).toBe('Ilya');
     expect(email.value).toBe('ilya@example.com');
     expect(inputEvents).toBe(1);
+  });
+});
+
+describe('extractForm combo flag', () => {
+  beforeEach(reset);
+
+  it('flags custom-widget comboboxes and leaves plain controls alone', () => {
+    labeledInput('plain', 'City', { type: 'text' });
+    labeledInput('rs', 'Country', { type: 'text', role: 'combobox', 'aria-autocomplete': 'list' });
+
+    const fields = extractForm(document);
+
+    expect(fields.map((f) => [f.label, f.combo])).toEqual([
+      ['City', false],
+      ['Country', true],
+    ]);
+  });
+
+  it('does not flag a native select as a custom widget', () => {
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'Country');
+    document.body.append(select);
+
+    expect(extractForm(document)[0].combo).toBe(false);
+  });
+});
+
+describe('fillByLabel', () => {
+  beforeEach(reset);
+
+  it('writes text, checkbox and native-select values addressed by label', () => {
+    const name = labeledInput('fn', 'First Name *', { type: 'text' });
+    const agree = labeledInput('ag', 'I agree', { type: 'checkbox' });
+    const label = document.createElement('label');
+    label.setAttribute('for', 'country');
+    label.textContent = 'Country';
+    const select = document.createElement('select');
+    select.id = 'country';
+    for (const c of ['United States', 'Canada']) {
+      const opt = document.createElement('option');
+      opt.textContent = c;
+      select.append(opt);
+    }
+    document.body.append(label, select);
+
+    const outcomes = fillByLabel(document, [
+      { label: 'First name', value: 'Ilya' },
+      { label: 'I agree', value: 'true' },
+      { label: 'Country', value: 'Canada' },
+    ]);
+
+    expect(name.value).toBe('Ilya');
+    expect(agree.checked).toBe(true);
+    expect(select.value).toBe('Canada');
+    expect(outcomes.every((o) => o.status === 'filled')).toBe(true);
+  });
+
+  it('lands values on the right field after a re-render changes the control count', () => {
+    labeledInput('em', 'Email', { type: 'email' });
+    const observed = extractForm(document).map((f) => f.label);
+    expect(observed).toEqual(['Email']);
+
+    // The form re-renders: a new control appears *before* the observed one, so
+    // any positional addressing would now target the wrong element.
+    const extra = document.createElement('input');
+    extra.type = 'text';
+    extra.setAttribute('aria-label', 'Referral code');
+    document.body.prepend(extra);
+
+    fillByLabel(document, [{ label: 'Email', value: 'ilya@example.com' }]);
+
+    expect(extra.value).toBe('');
+    expect(document.querySelector<HTMLInputElement>('#em')!.value).toBe('ilya@example.com');
+  });
+
+  it('skips a custom-widget combobox instead of writing stale text into it', () => {
+    const combo = labeledInput('co', 'Country', { type: 'text', role: 'combobox' });
+
+    const outcomes = fillByLabel(document, [{ label: 'Country', value: 'Canada' }]);
+
+    expect(combo.value).toBe('');
+    expect(outcomes).toEqual([{ label: 'Country', status: 'deferred_combobox' }]);
+  });
+
+  it('reports an unmatched label and a select value with no matching option', () => {
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'Country');
+    const opt = document.createElement('option');
+    opt.textContent = 'Canada';
+    select.append(opt);
+    document.body.append(select);
+
+    const outcomes = fillByLabel(document, [
+      { label: 'Favourite colour', value: 'blue' },
+      { label: 'Country', value: 'Norfolk Island' },
+    ]);
+
+    expect(outcomes).toEqual([
+      { label: 'Favourite colour', status: 'not_found' },
+      { label: 'Country', status: 'no_option' },
+    ]);
   });
 });
 
