@@ -15,11 +15,14 @@
     getMatch,
     getMatchText,
     getAutofillProfile,
+    runAgentAutofill,
     type FreehireJob,
     type JobMatch,
     type AutofillProfile,
   } from '../../lib/freehire';
   import { matchFieldKey } from '../../lib/form';
+  import { ToolChannel } from '../../lib/tools/client';
+  import { activeTabPage } from '../../lib/tools/page';
   import MatchCard from './MatchCard.svelte';
 
   let chat = $state<ChatState>(initChat());
@@ -43,6 +46,11 @@
   let user = $state<HireUser | null>(null);
   let authBusy = $state(false);
   let authError = $state('');
+
+  // The browser-tool wire: while the panel is open this holds the socket the
+  // agent drives this browser through. It lives here rather than in the service
+  // worker because only the panel stays alive.
+  const tools = new ToolChannel(activeTabPage);
 
   type MatchStatus = 'idle' | 'loading' | 'ready' | 'error' | 'empty';
   let matchStatus = $state<MatchStatus>('idle');
@@ -69,6 +77,7 @@
     return () => {
       frameUnsub?.();
       client?.close();
+      tools.stop();
       browser.tabs.onActivated.removeListener(refresh);
       browser.tabs.onUpdated.removeListener(onUpdated);
     };
@@ -78,7 +87,10 @@
     const token = await getToken();
     if (token) {
       user = await fetchMe(token);
-      if (user) void loadMatch();
+      if (user) {
+        tools.start(token);
+        void loadMatch();
+      }
     }
   }
 
@@ -166,7 +178,10 @@
       const token = await signIn();
       user = await fetchMe(token);
       if (!user) authError = 'Signed in, but could not load your account.';
-      else void loadMatch();
+      else {
+        tools.start(token);
+        void loadMatch();
+      }
     } catch (err) {
       authError = err instanceof Error ? err.message : 'Sign-in failed';
     } finally {
@@ -177,6 +192,8 @@
   async function handleSignOut() {
     await signOut();
     user = null;
+    // Detach the wire too: it is authenticated as the user who just left.
+    tools.stop();
     // Drop the authenticated socket + session so a later sign-in never reuses
     // the previous user's Roy session, and clear their conversation.
     resetRoy();
@@ -317,10 +334,41 @@
     };
   }
 
+  /**
+   * Autofill, agent-first: freehire's agent reads the form through the wire,
+   * maps the profile onto it, and fills what it can justify. The deterministic
+   * filler stays as the fallback until the agent path has proven itself — it
+   * only knows a fixed set of labels, but it needs nothing but this browser.
+   */
   async function autofill() {
     const token = await getToken();
     if (!token || autofilling) return;
     autofilling = true;
+    try {
+      const report = await runAgentAutofill(token);
+      const filled = report.filled.length;
+      notices.push(
+        filled > 0
+          ? `✓ Autofilled ${filled} field${filled === 1 ? '' : 's'} — review before submitting.`
+          : 'The agent found nothing on this form it could fill from your profile.',
+      );
+      if (report.deferred.length > 0) {
+        notices.push(`Not fillable yet (custom dropdowns): ${report.deferred.join(', ')}.`);
+      }
+      if (report.unmapped.length > 0) {
+        notices.push(`Left for you: ${report.unmapped.join(', ')}.`);
+      }
+    } catch (err) {
+      notices.push(
+        `Agent autofill unavailable (${err instanceof Error ? err.message : 'error'}) — using the basic filler.`,
+      );
+      await deterministicAutofill(token);
+    } finally {
+      autofilling = false;
+    }
+  }
+
+  async function deterministicAutofill(token: string) {
     try {
       const formReply = (await browser.runtime.sendMessage({
         kind: 'GET_FORM',
@@ -347,8 +395,6 @@
       notices.push(`✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.`);
     } catch (err) {
       notices.push(`Autofill failed: ${err instanceof Error ? err.message : 'error'}`);
-    } finally {
-      autofilling = false;
     }
   }
 

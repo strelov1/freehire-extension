@@ -56,7 +56,9 @@ primitives, and an agent filling standard fields end-to-end.
   a profile endpoint the agent uses for values (reuse `/me/autofill-profile`).
 - **freehire-agent / harness**: the driver that calls the primitives (the agent
   loop; slice-1 fills standard fields only).
-- **Dependencies**: none new. Builds on the unified JWT auth already shipped.
+- **Dependencies**: no new services; builds on the unified JWT auth already
+  shipped. One new Go module — `github.com/gofiber/contrib/websocket`, since hire
+  had no WebSocket transport (see design.md).
 
 Spike verdict + Jobright reverse-engineering recorded in memory
 `hire-extension-autofill-wire`.

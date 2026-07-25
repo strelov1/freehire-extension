@@ -72,9 +72,32 @@ rather than couple slice 1 to it.
 Additive. The deterministic autofill button stays until the agent path is proven,
 then can be replaced. Internal-only until wired to a running hire relay + harness.
 
+## Resolved during implementation
+
+**Relay endpoint = a dedicated `GET /api/v1/tools/ws?role=…`** in a new
+`internal/browsertools` package, not a reuse of Roy's relay code (which lives in
+another repo and another language). Auth is `auth.RequireAuthWS`: `Bearer` for a
+server-side harness, the `freehire-jwt` subprotocol for the extension. Only the
+marker is echoed back, never the token.
+
+**The slice-1 driver is an agent inside hire** (`internal/autofillagent`),
+triggered by `POST /api/v1/me/autofill/run`. It attaches to the hub as
+`RoleHarness` through the same `Join`/`Forward` path a remote harness uses — one
+relay path, no in-process shortcut beside it — so the wire stays
+harness-agnostic and the panel gets a single endpoint to call. Roy stays the
+long-term brain; it needs the deferred MCP wrapping to drive these tools.
+
+**"No fabricated values" is enforced, not prompted.** The planner's output is
+filtered against the profile (`groundedIn`): a value survives only if it is
+contained in, or contains, one of the profile's own values. The prompt asks for
+the same thing, but the guarantee lives in code.
+
+**New Go dependency:** `github.com/gofiber/contrib/websocket` — hire had no
+WebSocket transport at all. This contradicts the proposal's "Dependencies: none
+new", which meant no new *services*; the relay cannot be built without a
+WebSocket library.
+
 ## Open Questions
 
-- Exact hire relay endpoint shape (reuse the Roy relay code path vs a dedicated
-  `/tools/ws`) — resolve during the hire task group; both are owner-scoped WS.
-- Which harness drives slice 1 (Roy, already wired, vs a minimal driver) — pick
-  the smallest that proves end-to-end; does not change the wire contract.
+- Multi-node: the hub is in-memory, so both ends of a channel must reach the same
+  API instance. Fine single-node; a shared backplane is the seam (`Hub`).
