@@ -2,7 +2,10 @@
 
 - [ ] 1.1 Write the tool list down in one place both repos can read: names, arguments, and every outcome each primitive can return, taken from `freehire-extension`'s `lib/combobox.ts` and `lib/tools/executor.ts` as they stand. This is the artefact the two implementations are checked against, so it precedes both.
 - [ ] 1.2 Decide the MCP question left open in design: do the browser primitives appear unconditionally, or behind an opt-in? An MCP host gaining browser-*writing* tools by default is a larger grant than its current read-and-apply tools.
-- [ ] 1.3 Confirm on a running hire that an API key authenticates `role=harness` and that a frame reaches the extension — a throwaway `websocat`-level check, before either client is built. If the key is refused, everything below is blocked and that is a hire change.
+- [x] 1.3 Confirm on a running hire that an API key authenticates `role=harness` and that a frame reaches the extension — a throwaway `websocat`-level check, before either client is built. If the key is refused, everything below is blocked and that is a hire change.
+      **Closed against live `freehire.dev`.** `Authorization: Bearer fhk_…`, the key already in `~/.freehire/creds.json`, upgraded to `101 Switching Protocols` on `?role=harness`; the frame `{"id":"gate-1","tool":"read_form"}` came back as `{"id":"gate-1","error":"the browser extension is not connected"}` — accepted, routed, and answered on the same id. So the credential, the role and the framing all work as documented, and no hire change is needed.
+      Two things this settles for the clients: the handshake **must** be HTTP/1.1 (over HTTP/2 nginx answers `426 Upgrade Required`), and the server's no-extension message is already a sentence a user can act on, so rendering it means not mangling it rather than inventing it.
+      Still unverified: a frame reaching the *extension* and returning real fields. That needs a browser with the panel open and is the one part a terminal cannot check.
 
 ## 2. freehire-cli — the wire client
 
