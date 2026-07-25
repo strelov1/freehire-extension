@@ -2,9 +2,11 @@
  * The extension's "eyes + hands" for a page's form: a serialisable observation
  * (extractForm) the agent can reason over, and an executor (applyFills) that
  * writes values back, dispatching native input/change events so React/Angular
- * ATS forms register the change. Field elements are addressed by a stable index
- * into collectFillable, so an observation and its fills stay in lockstep without
- * shipping DOM nodes across the content↔panel boundary.
+ * ATS forms register the change. Both work in *questions* (collectQuestions),
+ * not raw controls, so a question rendered as 29 checkboxes stays one field; a
+ * question is addressed by a stable index into that list, which keeps an
+ * observation and its fills in lockstep without shipping DOM nodes across the
+ * content↔panel boundary.
  */
 
 import type { FieldTag, FormField, Fill, LabelFill, FillOutcome } from './protocol';
@@ -14,7 +16,7 @@ type Fillable = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 // Input types that are not free-fill targets.
 const SKIP_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'file']);
 
-/** The ordered list of fillable controls — the index space for observe + act. */
+/** The ordered list of fillable controls on the page. */
 export function collectFillable(doc: Document): Fillable[] {
   const all = Array.from(doc.querySelectorAll<Fillable>('input, select, textarea'));
   return all.filter((el) => {
@@ -23,6 +25,102 @@ export function collectFillable(doc: Document): Fillable[] {
     if (isHidden(el)) return false;
     return true;
   });
+}
+
+/**
+ * One question the page asks. Usually a single control, but a question can be
+ * rendered as several — "which countries do you anticipate working in" is 29
+ * checkboxes under one `legend`. Treating those as 29 fields both swamps the
+ * report and hides the actual question from the agent, so the question, not the
+ * control, is the unit the rest of this module works in.
+ */
+export interface Question {
+  /** The question's own text: a control's label, or the group's legend. */
+  label: string;
+  /** One control, or the group's controls in document order. */
+  controls: Fillable[];
+}
+
+/** The ordered list of questions — the index space for observe + act. */
+export function collectQuestions(doc: Document): Question[] {
+  const questions: Question[] = [];
+  const groups: Question[] = [];
+  const byContainer = new Map<Element, Map<string, Question>>();
+
+  for (const el of collectFillable(doc)) {
+    const group = groupOf(el);
+    if (!group) {
+      questions.push({ label: extractLabel(el), controls: [el] });
+      continue;
+    }
+    let inContainer = byContainer.get(group.container);
+    if (!inContainer) {
+      inContainer = new Map();
+      byContainer.set(group.container, inContainer);
+    }
+    const open = inContainer.get(group.key);
+    if (open) {
+      open.controls.push(el);
+      continue;
+    }
+    const question: Question = { label: group.question, controls: [el] };
+    inContainer.set(group.key, question);
+    questions.push(question);
+    groups.push(question);
+  }
+
+  // A group of one is not a group: a lone "I agree to the terms" checkbox under
+  // a `Consent` legend is already its own question, and carrying the legend
+  // instead of its label would lose what the user is agreeing to.
+  for (const group of groups) {
+    if (group.controls.length === 1) group.label = extractLabel(group.controls[0]);
+  }
+  return questions;
+}
+
+/**
+ * The group a control would answer within, or null when it is its own question.
+ *
+ * Deliberately narrow, because over-grouping hides fields from the agent while
+ * under-grouping only makes the report long. The control must be a checkbox or
+ * radio — an `Address` fieldset's text inputs are separate questions despite the
+ * shared legend — and its container must be labelled, since without a label
+ * there is no question text to report.
+ *
+ * `key` splits a container that holds more than one question: a
+ * "Demographic Questions" fieldset wrapping both a Yes/No radio pair and a
+ * country checklist asks two things, and merging them would offer all the options
+ * at once and leave the second question unanswerable. Controls answering together
+ * share a `name` and a type, which is how the live forms mark them.
+ */
+function groupOf(el: Fillable): { container: Element; question: string; key: string } | null {
+  if (!(el instanceof HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio')) return null;
+  // No name, no evidence: a React-controlled form may omit it entirely, and then
+  // nothing distinguishes one question in a container from two. A long report is
+  // the safer failure, so such controls stay ungrouped.
+  if (!el.name) return null;
+  const labelled = labelledContainer(el);
+  return labelled ? { ...labelled, key: `${el.type} ${el.name}` } : null;
+}
+
+/** The nearest container that states the question its controls answer. */
+function labelledContainer(el: Element): { container: Element; question: string } | null {
+  const fieldset = el.closest('fieldset');
+  if (fieldset) {
+    const legend = Array.from(fieldset.children).find((c) => c.tagName === 'LEGEND');
+    const question = collapse(legend?.textContent);
+    if (question) return { container: fieldset, question };
+  }
+  // The same structure without a fieldset: ARIA's own way of saying "these
+  // controls answer one question".
+  const group = el.closest('[role="group"], [role="radiogroup"]');
+  if (group) {
+    const question =
+      textFromIds(el.ownerDocument, group.getAttribute('aria-labelledby')) ||
+      collapse(group.getAttribute('aria-label'));
+    if (question) return { container: group, question };
+  }
+  return null;
 }
 
 /**
@@ -41,25 +139,105 @@ function isHidden(el: Fillable): boolean {
 
 /** Serialises the page's form into indexed FormFields. Pure over the document. */
 export function extractForm(doc: Document): FormField[] {
-  return collectFillable(doc).map((el, index) => {
-    const tag = el.tagName.toLowerCase() as FieldTag;
-    const field: FormField = {
-      index,
-      tag,
-      type: el instanceof HTMLInputElement ? el.type : tag,
-      label: extractLabel(el),
-      name: el.getAttribute('name') ?? '',
-      // A React-rendered ATS form typically validates in JS and marks the
-      // requirement with ARIA rather than the native attribute.
-      required: el.required || el.getAttribute('aria-required') === 'true',
-      value: el.value ?? '',
-      combo: isComboWidget(el),
-    };
-    if (el instanceof HTMLSelectElement) {
-      field.options = Array.from(el.options).map((o) => (o.textContent ?? '').trim());
-    }
-    return field;
-  });
+  return collectQuestions(doc).map(describeQuestion);
+}
+
+function describeQuestion({ label, controls }: Question, index: number): FormField {
+  const [el] = controls;
+  const tag = el.tagName.toLowerCase() as FieldTag;
+  const field: FormField = {
+    index,
+    tag,
+    type: el instanceof HTMLInputElement ? el.type : tag,
+    label,
+    name: el.getAttribute('name') ?? '',
+    // A React-rendered ATS form typically validates in JS and marks the
+    // requirement with ARIA rather than the native attribute.
+    required: controls.some((c) => c.required || c.getAttribute('aria-required') === 'true'),
+    value: el.value ?? '',
+    combo: isComboWidget(el),
+  };
+
+  if (controls.length > 1) {
+    // A group: the options are the controls' own labels, and its value is
+    // whichever of them are already chosen.
+    field.options = controls.map(extractLabel);
+    field.value = controls
+      .filter((c) => c instanceof HTMLInputElement && c.checked)
+      .map(extractLabel)
+      .join(', ');
+  } else if (el instanceof HTMLSelectElement) {
+    field.options = Array.from(el.options).map((o) => (o.textContent ?? '').trim());
+  } else if (field.combo) {
+    const offered = comboOptions(el);
+    if (offered.length) field.options = offered;
+  }
+  return field;
+}
+
+/**
+ * The options a custom-widget combobox is offering right now, read from the
+ * listbox the widget itself points at. Addressing it by `aria-controls`/
+ * `aria-owns` rather than sweeping the page for `[role=option]` is what keeps a
+ * form of 27 widgets honest: a closed widget owns no listbox, so it reports
+ * nothing instead of inheriting an open neighbour's countries.
+ *
+ * A react-select renders its listbox only once opened, so this is empty for one
+ * that is closed — the agent reaches for `combobox.open` in that case.
+ */
+export function comboOptions(el: Element): string[] {
+  return comboOptionNodes(el).map(collapseText).filter(Boolean);
+}
+
+/**
+ * The option elements a widget is offering, for a caller that must click one.
+ * Options the user cannot see are left out, on the same grounds as hidden
+ * controls: a widget keeping a stale list behind `display:none` is not offering
+ * it, and neither reading nor clicking it would be honest.
+ */
+export function comboOptionNodes(el: Element): Element[] {
+  const listbox = comboListbox(el);
+  if (!listbox) return [];
+  return Array.from(listbox.querySelectorAll('[role="option"]')).filter(isOnScreen);
+}
+
+/**
+ * The listbox a widget declares as its own, or null when it names none.
+ *
+ * `aria-controls` is an id *list*, and a widget may well point at a live-region
+ * status node alongside its listbox — so the ids are resolved individually and
+ * the one that actually looks like a listbox wins. Resolving the whole attribute
+ * as a single id finds nothing, which would report an open widget as offering
+ * no options.
+ */
+export function comboListbox(el: Element): Element | null {
+  const ids = (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '').split(/\s+/).filter(Boolean);
+  const named = ids.map((id) => el.ownerDocument.getElementById(id)).filter((node): node is HTMLElement => !!node);
+  const listbox = named.find((n) => n.getAttribute('role') === 'listbox' || n.querySelector('[role="option"]'));
+  return listbox ?? named[0] ?? null;
+}
+
+function collapseText(el: Element): string {
+  return collapse(el.textContent);
+}
+
+/**
+ * True when the element is on screen for the user; see `isHidden`. A widget's
+ * menu is routinely hidden with `visibility` or `opacity` rather than `display`,
+ * which `checkVisibility` ignores unless asked, so those are checked explicitly.
+ */
+export function isOnScreen(el: Element): boolean {
+  if (el.closest('[hidden]')) return false;
+  if (typeof el.checkVisibility === 'function' && !el.checkVisibility()) return false;
+
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = view.getComputedStyle(node);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    if (style.opacity === '0') return false;
+  }
+  return true;
 }
 
 /**
@@ -71,12 +249,16 @@ export function extractForm(doc: Document): FormField[] {
  */
 export function isComboWidget(el: Fillable): boolean {
   if (el instanceof HTMLSelectElement) return false;
-  return (
-    el.getAttribute('role') === 'combobox' ||
-    el.hasAttribute('aria-autocomplete') ||
-    el.getAttribute('aria-haspopup') === 'listbox'
-  );
+  return el.matches(COMBO_WIDGET);
 }
+
+/**
+ * The ways a widget declares itself a combobox. Exported because anything that
+ * reads *around* a widget must recognise the same set: a guard counting only
+ * `[role=combobox]` would walk straight past a neighbour that says
+ * `aria-haspopup="listbox"` instead, and report that neighbour's value.
+ */
+export const COMBO_WIDGET = '[role="combobox"], [aria-autocomplete], [aria-haspopup="listbox"]';
 
 /** Best-effort human label for a control, in decreasing reliability. */
 function extractLabel(el: Fillable): string {
@@ -86,22 +268,26 @@ function extractLabel(el: Fillable): string {
     .join(' ');
   if (fromLabels) return fromLabels;
 
-  const labelledBy = el.getAttribute('aria-labelledby');
-  if (labelledBy) {
-    const text = labelledBy
-      .split(/\s+/)
-      .map((id) => el.ownerDocument.getElementById(id)?.textContent?.trim() ?? '')
-      .filter(Boolean)
-      .join(' ');
-    if (text) return text;
-  }
-
   return (
-    el.getAttribute('aria-label')?.trim() ||
-    el.getAttribute('placeholder')?.trim() ||
-    el.getAttribute('name')?.trim() ||
-    ''
+    textFromIds(el.ownerDocument, el.getAttribute('aria-labelledby')) ||
+    collapse(el.getAttribute('aria-label')) ||
+    collapse(el.getAttribute('placeholder')) ||
+    collapse(el.getAttribute('name'))
   );
+}
+
+/** The joined text of the elements an `aria-labelledby`-style id list names. */
+function textFromIds(doc: Document, ids: string | null): string {
+  if (!ids) return '';
+  return ids
+    .split(/\s+/)
+    .map((id) => collapse(doc.getElementById(id)?.textContent))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function collapse(text: string | null | undefined): string {
+  return (text ?? '').replace(/\s+/g, ' ').trim();
 }
 
 /** Canonical profile keys and the label synonyms that map to them. */
@@ -138,32 +324,88 @@ export function matchFieldKey(label: string): string | null {
   return null;
 }
 
-/** Applies fills by index, returning how many controls were written. */
+/** Applies fills by index, returning how many questions were answered. */
 export function applyFills(doc: Document, fills: Fill[]): number {
-  const controls = collectFillable(doc);
+  const questions = collectQuestions(doc);
   let written = 0;
   for (const { index, value } of fills) {
-    const el = controls[index];
-    if (el && fillField(el, value)) written++;
+    const question = questions[index];
+    if (question && answerQuestion(question, value)) written++;
   }
   return written;
 }
 
 /**
- * Writes values into the controls carrying the given labels, in one pass:
+ * Writes values into the questions carrying the given labels, in one pass:
  * the page is read and written inside a single synchronous walk, so a re-render
  * between an agent's observation and its fills cannot drift the target the way a
  * positional index does. Every requested fill gets an outcome; custom-widget
  * comboboxes are reported as deferred rather than written into.
  */
 export function fillByLabel(doc: Document, fills: LabelFill[]): FillOutcome[] {
-  const controls = collectFillable(doc);
+  const questions = collectQuestions(doc);
   return fills.map(({ label, value }) => {
-    const el = controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(label));
-    if (!el) return { label, status: 'not_found' as const };
-    if (isComboWidget(el)) return { label, status: 'deferred_combobox' as const };
-    return { label, status: fillField(el, value) ? ('filled' as const) : ('no_option' as const) };
+    const question = questions.find((q) => normalizeLabel(q.label) === normalizeLabel(label));
+    if (!question) return { label, status: 'not_found' as const };
+    if (question.controls.length === 1 && isComboWidget(question.controls[0])) {
+      return { label, status: 'deferred_combobox' as const };
+    }
+    return { label, status: answerQuestion(question, value) ? ('filled' as const) : ('no_option' as const) };
   });
+}
+
+/**
+ * Answers one question. A group is answered by ticking the controls whose own
+ * labels are the chosen options; if any of them is not on offer, nothing is
+ * ticked, so a wrong choice is reported rather than half-applied.
+ *
+ * Ticking only, never clearing: a group may already carry an answer the user
+ * chose by hand, and autofill has no business undoing it.
+ */
+function answerQuestion({ controls }: Question, value: string): boolean {
+  if (controls.length === 1) return fillField(controls[0], value);
+
+  const chosen = chosenOptions(controls, value);
+  if (!chosen) return false;
+  for (const control of chosen) fillField(control, 'true');
+  return true;
+}
+
+/**
+ * The controls a group's requested value names, or null when it names one the
+ * group does not offer.
+ *
+ * A group reports every chosen option as one comma-joined value and must accept
+ * that value back — but an option may carry a comma of its own, so splitting on
+ * commas would turn "Germany, Korea, Republic of" into three countries the group
+ * has never heard of. Instead the value is consumed from the front, taking the
+ * *longest* option that matches at each step, which recovers both readings
+ * unambiguously.
+ */
+function chosenOptions(controls: Fillable[], value: string): Fillable[] | null {
+  const byLongestLabel = [...controls].sort((a, b) => extractLabel(b).length - extractLabel(a).length);
+  const chosen: Fillable[] = [];
+  let rest = value.trim();
+
+  while (rest) {
+    const next = byLongestLabel.find((c) => startsWithOption(rest, extractLabel(c)));
+    if (!next) return null;
+    chosen.push(next);
+    rest = rest.slice(extractLabel(next).trim().length).replace(/^\s*,\s*/, '').trim();
+  }
+  return chosen.length ? chosen : null;
+}
+
+/** True when `value` opens with exactly this option, not merely with its prefix. */
+function startsWithOption(value: string, option: string): boolean {
+  const label = option.trim();
+  if (!label) return false;
+  const head = value.slice(0, label.length);
+  if (normalizeLabel(head) !== normalizeLabel(label)) return false;
+  // "Germany" must not match inside "Germanywest": what follows has to end the
+  // option, either at the string's end or at the separator.
+  const tail = value.slice(label.length);
+  return tail === '' || /^\s*,/.test(tail);
 }
 
 /** Writes one control, dispatching native events. Returns false if unfillable. */

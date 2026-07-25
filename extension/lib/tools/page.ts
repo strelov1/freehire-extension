@@ -5,7 +5,7 @@
  */
 
 import { browser } from 'wxt/browser';
-import type { LabelFill, RuntimeMessage } from '../protocol';
+import type { ComboboxStep, LabelFill, RuntimeMessage } from '../protocol';
 import type { PageBridge } from './executor';
 import type { FramedField } from './wire';
 
@@ -24,5 +24,11 @@ export const activeTabPage: PageBridge = {
     const reply = await ask({ kind: 'FILL_BY_LABEL', fills });
     if (reply?.kind !== 'FILL_OUTCOMES') throw new Error('could not reach the page to fill it');
     return reply.outcomes;
+  },
+
+  async combobox(step: ComboboxStep) {
+    const reply = await ask({ kind: 'COMBOBOX_STEP', step });
+    if (reply?.kind !== 'COMBOBOX_REPLY') throw new Error('could not reach the page to drive the widget');
+    return reply.reply;
   },
 };

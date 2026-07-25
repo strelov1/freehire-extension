@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { executeTool, mergeFrameOutcomes, type PageBridge } from './executor';
+import { executeTool, mergeComboboxReplies, mergeFrameOutcomes, type PageBridge } from './executor';
 import { parseToolCall } from './wire';
 import type { FramedField } from './wire';
+import type { ComboboxStep } from '../protocol';
 
 const field = (label: string, frame = 0): FramedField => ({
   index: 0,
@@ -19,6 +20,7 @@ function bridge(over: Partial<PageBridge> = {}): PageBridge {
   return {
     readForm: async () => [field('Email')],
     fillSimple: async (fills) => fills.map((f) => ({ label: f.label, status: 'filled' as const })),
+    combobox: async () => ({ status: 'not_found' as const }),
     ...over,
   };
 }
@@ -51,10 +53,73 @@ describe('executeTool', () => {
   });
 
   it('reports an unknown tool as an error result, not silence', async () => {
-    const res = await executeTool({ id: 'c4', tool: 'combobox.open' }, bridge());
+    const res = await executeTool({ id: 'c4', tool: 'submit_form' }, bridge());
 
     expect(res.id).toBe('c4');
     expect(res.error).toMatch(/unknown tool/i);
+  });
+
+  it('drives the widget through the four combobox primitives', async () => {
+    const seen: ComboboxStep[] = [];
+    const page = bridge({
+      combobox: async (step) => {
+        seen.push(step);
+        return { status: 'open', options: ['Yes', 'No'] };
+      },
+    });
+
+    const res = await executeTool({ id: 'c6', tool: 'combobox.options', args: { label: 'Sponsorship' } }, page);
+
+    expect(seen).toEqual([{ action: 'options', label: 'Sponsorship', value: '' }]);
+    expect(res).toEqual({ id: 'c6', result: { status: 'open', options: ['Yes', 'No'] } });
+  });
+
+  it('carries the chosen option to combobox.select and combobox.verify', async () => {
+    const seen: ComboboxStep[] = [];
+    const page = bridge({
+      combobox: async (step) => {
+        seen.push(step);
+        return { status: 'selected' };
+      },
+    });
+
+    await executeTool({ id: 'c7', tool: 'combobox.select', args: { label: 'Country', value: 'Germany' } }, page);
+    await executeTool({ id: 'c8', tool: 'combobox.verify', args: { label: 'Country', value: 'Germany' } }, page);
+
+    expect(seen).toEqual([
+      { action: 'select', label: 'Country', value: 'Germany' },
+      { action: 'verify', label: 'Country', value: 'Germany' },
+    ]);
+  });
+
+  it('rejects a combobox call that names no widget', async () => {
+    const res = await executeTool({ id: 'c9', tool: 'combobox.open', args: {} }, bridge());
+
+    expect(res.error).toMatch(/label/);
+  });
+
+  it('rejects a select that names no option, rather than committing a blank', async () => {
+    const res = await executeTool({ id: 'c10', tool: 'combobox.select', args: { label: 'Country' } }, bridge());
+
+    expect(res.error).toMatch(/value/);
+  });
+});
+
+describe('mergeComboboxReplies', () => {
+  it('keeps the frame that holds the widget over the frames that do not', () => {
+    expect(
+      mergeComboboxReplies([{ status: 'not_found' }, { status: 'opened' }, { status: 'not_found' }]),
+    ).toEqual({ status: 'opened' });
+  });
+
+  it('reports not-found when no frame holds the widget', () => {
+    expect(mergeComboboxReplies([{ status: 'not_found' }, { status: 'not_found' }])).toEqual({
+      status: 'not_found',
+    });
+  });
+
+  it('reports not-found when no frame answered at all', () => {
+    expect(mergeComboboxReplies([])).toEqual({ status: 'not_found' });
   });
 
   it('turns a thrown executor failure into an error result tagged with the call id', async () => {
