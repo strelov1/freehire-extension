@@ -2,9 +2,11 @@
  * The extension's "eyes + hands" for a page's form: a serialisable observation
  * (extractForm) the agent can reason over, and an executor (applyFills) that
  * writes values back, dispatching native input/change events so React/Angular
- * ATS forms register the change. Field elements are addressed by a stable index
- * into collectFillable, so an observation and its fills stay in lockstep without
- * shipping DOM nodes across the content↔panel boundary.
+ * ATS forms register the change. Both work in *questions* (collectQuestions),
+ * not raw controls, so a question rendered as 29 checkboxes stays one field; a
+ * question is addressed by a stable index into that list, which keeps an
+ * observation and its fills in lockstep without shipping DOM nodes across the
+ * content↔panel boundary.
  */
 
 import type { FieldTag, FormField, Fill, LabelFill, FillOutcome } from './protocol';
@@ -14,7 +16,7 @@ type Fillable = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 // Input types that are not free-fill targets.
 const SKIP_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'file']);
 
-/** The ordered list of fillable controls — the index space for observe + act. */
+/** The ordered list of fillable controls on the page. */
 export function collectFillable(doc: Document): Fillable[] {
   const all = Array.from(doc.querySelectorAll<Fillable>('input, select, textarea'));
   return all.filter((el) => {
@@ -23,6 +25,66 @@ export function collectFillable(doc: Document): Fillable[] {
     if (isHidden(el)) return false;
     return true;
   });
+}
+
+/**
+ * One question the page asks. Usually a single control, but a question can be
+ * rendered as several — "which countries do you anticipate working in" is 29
+ * checkboxes under one `legend`. Treating those as 29 fields both swamps the
+ * report and hides the actual question from the agent, so the question, not the
+ * control, is the unit the rest of this module works in.
+ */
+export interface Question {
+  /** The question's own text: a control's label, or the group's legend. */
+  label: string;
+  /** One control, or the group's controls in document order. */
+  controls: Fillable[];
+}
+
+/** The ordered list of questions — the index space for observe + act. */
+export function collectQuestions(doc: Document): Question[] {
+  const questions: Question[] = [];
+  const byFieldset = new Map<Element, Question>();
+
+  for (const el of collectFillable(doc)) {
+    const group = groupOf(el);
+    if (!group) {
+      questions.push({ label: extractLabel(el), controls: [el] });
+      continue;
+    }
+    const open = byFieldset.get(group.fieldset);
+    if (open) {
+      open.controls.push(el);
+    } else {
+      const question: Question = { label: group.question, controls: [el] };
+      byFieldset.set(group.fieldset, question);
+      questions.push(question);
+    }
+  }
+
+  // A group of one is not a group: a lone "I agree to the terms" checkbox under
+  // a `Consent` legend is already its own question, and carrying the legend
+  // instead of its label would lose what the user is agreeing to.
+  return questions.map((q) => (q.controls.length > 1 ? q : { label: extractLabel(q.controls[0]), controls: q.controls }));
+}
+
+/**
+ * The group a control would answer within, or null when it is its own question.
+ *
+ * Deliberately narrow, because over-grouping hides fields from the agent while
+ * under-grouping only makes the report long. The control must be a checkbox or
+ * radio — an `Address` fieldset's text inputs are separate questions despite the
+ * shared legend — and the fieldset must carry a legend, since without one there
+ * is no question text to report.
+ */
+function groupOf(el: Fillable): { fieldset: Element; question: string } | null {
+  if (!(el instanceof HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio')) return null;
+  const fieldset = el.closest('fieldset');
+  if (!fieldset) return null;
+
+  const legend = Array.from(fieldset.children).find((c) => c.tagName === 'LEGEND');
+  const question = legend?.textContent?.replace(/\s+/g, ' ').trim();
+  return question ? { fieldset, question } : null;
 }
 
 /**
@@ -41,25 +103,64 @@ function isHidden(el: Fillable): boolean {
 
 /** Serialises the page's form into indexed FormFields. Pure over the document. */
 export function extractForm(doc: Document): FormField[] {
-  return collectFillable(doc).map((el, index) => {
-    const tag = el.tagName.toLowerCase() as FieldTag;
-    const field: FormField = {
-      index,
-      tag,
-      type: el instanceof HTMLInputElement ? el.type : tag,
-      label: extractLabel(el),
-      name: el.getAttribute('name') ?? '',
-      // A React-rendered ATS form typically validates in JS and marks the
-      // requirement with ARIA rather than the native attribute.
-      required: el.required || el.getAttribute('aria-required') === 'true',
-      value: el.value ?? '',
-      combo: isComboWidget(el),
-    };
-    if (el instanceof HTMLSelectElement) {
-      field.options = Array.from(el.options).map((o) => (o.textContent ?? '').trim());
-    }
-    return field;
-  });
+  return collectQuestions(doc).map(describeQuestion);
+}
+
+function describeQuestion({ label, controls }: Question, index: number): FormField {
+  const [el] = controls;
+  const tag = el.tagName.toLowerCase() as FieldTag;
+  const field: FormField = {
+    index,
+    tag,
+    type: el instanceof HTMLInputElement ? el.type : tag,
+    label,
+    name: el.getAttribute('name') ?? '',
+    // A React-rendered ATS form typically validates in JS and marks the
+    // requirement with ARIA rather than the native attribute.
+    required: controls.some((c) => c.required || c.getAttribute('aria-required') === 'true'),
+    value: el.value ?? '',
+    combo: isComboWidget(el),
+  };
+
+  if (controls.length > 1) {
+    // A group: the options are the controls' own labels, and its value is
+    // whichever of them are already chosen.
+    field.options = controls.map(extractLabel);
+    field.value = controls
+      .filter((c) => c instanceof HTMLInputElement && c.checked)
+      .map(extractLabel)
+      .join(', ');
+  } else if (el instanceof HTMLSelectElement) {
+    field.options = Array.from(el.options).map((o) => (o.textContent ?? '').trim());
+  } else if (field.combo) {
+    const offered = comboOptions(el);
+    if (offered.length) field.options = offered;
+  }
+  return field;
+}
+
+/**
+ * The options a custom-widget combobox is offering right now, read from the
+ * listbox the widget itself points at. Addressing it by `aria-controls`/
+ * `aria-owns` rather than sweeping the page for `[role=option]` is what keeps a
+ * form of 27 widgets honest: a closed widget owns no listbox, so it reports
+ * nothing instead of inheriting an open neighbour's countries.
+ *
+ * A react-select renders its listbox only once opened, so this is empty for one
+ * that is closed — the agent reaches for `combobox.open` in that case.
+ */
+export function comboOptions(el: Element): string[] {
+  const listbox = ownListbox(el);
+  if (!listbox) return [];
+  return Array.from(listbox.querySelectorAll('[role="option"]'))
+    .map((o) => (o.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+/** The listbox a widget declares as its own, or null when it has none open. */
+function ownListbox(el: Element): Element | null {
+  const id = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+  return id ? el.ownerDocument.getElementById(id) : null;
 }
 
 /**
@@ -138,32 +239,46 @@ export function matchFieldKey(label: string): string | null {
   return null;
 }
 
-/** Applies fills by index, returning how many controls were written. */
+/** Applies fills by index, returning how many questions were answered. */
 export function applyFills(doc: Document, fills: Fill[]): number {
-  const controls = collectFillable(doc);
+  const questions = collectQuestions(doc);
   let written = 0;
   for (const { index, value } of fills) {
-    const el = controls[index];
-    if (el && fillField(el, value)) written++;
+    const question = questions[index];
+    if (question && answerQuestion(question, value)) written++;
   }
   return written;
 }
 
 /**
- * Writes values into the controls carrying the given labels, in one pass:
+ * Writes values into the questions carrying the given labels, in one pass:
  * the page is read and written inside a single synchronous walk, so a re-render
  * between an agent's observation and its fills cannot drift the target the way a
  * positional index does. Every requested fill gets an outcome; custom-widget
  * comboboxes are reported as deferred rather than written into.
  */
 export function fillByLabel(doc: Document, fills: LabelFill[]): FillOutcome[] {
-  const controls = collectFillable(doc);
+  const questions = collectQuestions(doc);
   return fills.map(({ label, value }) => {
-    const el = controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(label));
-    if (!el) return { label, status: 'not_found' as const };
-    if (isComboWidget(el)) return { label, status: 'deferred_combobox' as const };
-    return { label, status: fillField(el, value) ? ('filled' as const) : ('no_option' as const) };
+    const question = questions.find((q) => normalizeLabel(q.label) === normalizeLabel(label));
+    if (!question) return { label, status: 'not_found' as const };
+    if (question.controls.length === 1 && isComboWidget(question.controls[0])) {
+      return { label, status: 'deferred_combobox' as const };
+    }
+    return { label, status: answerQuestion(question, value) ? ('filled' as const) : ('no_option' as const) };
   });
+}
+
+/**
+ * Answers one question. A group is answered by ticking the control whose own
+ * label is the chosen option; an option the group does not offer leaves it
+ * untouched, so a wrong choice is reported rather than approximated.
+ */
+function answerQuestion({ controls }: Question, value: string): boolean {
+  if (controls.length === 1) return fillField(controls[0], value);
+  const chosen = controls.find((c) => normalizeLabel(extractLabel(c)) === normalizeLabel(value));
+  if (!chosen) return false;
+  return fillField(chosen, 'true');
 }
 
 /** Writes one control, dispatching native events. Returns false if unfillable. */

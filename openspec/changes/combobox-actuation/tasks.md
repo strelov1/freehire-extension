@@ -1,8 +1,11 @@
 ## 1. Establish that widgets can be driven at all
 
-- [ ] 1.1 Throwaway probe, in a real Chrome with the extension loaded, against the live Stripe and Scout Motors forms: can a react-select be opened, its options read, and one committed with events an injected script can dispatch? Record what each widget responds to.
-- [ ] 1.2 Find where the committed value is readable — the widget's own displayed value, not the input's `value` — so verification cannot report a success that did not happen.
-- [ ] 1.3 Verdict before building: drivable → continue; not drivable → stop and bring the CDP/`debugger` trade-off back as an explicit decision.
+- [x] 1.1 Throwaway probe, in a real Chrome with the extension loaded, against the live Stripe and Scout Motors forms: can a react-select be opened, its options read, and one committed with events an injected script can dispatch? Record what each widget responds to.
+      **Yes.** `pointerdown`+`mousedown`+`mouseup`+`click` on the `[class*="-control"]` node (not the input) opens it; the same sequence on a `[role="option"]` node commits that option and closes the widget. Verified across Stripe's 13 and Scout's 27 widgets. Two caveats found: React 18 re-renders asynchronously, so opening must be *awaited*, not read back synchronously; and a widget's own listbox is addressed by its `aria-controls` id, which only exists while open — a page-wide `[role=option]` sweep would return a *neighbouring* widget's options.
+- [x] 1.2 Find where the committed value is readable — the widget's own displayed value, not the input's `value` — so verification cannot report a success that did not happen.
+      The widget's own `[class*="singleValue"]` node. `input.value` is the empty string after a successful commit on every widget probed, and no hidden input mirrors the value. Also: the committed text is not always the option text — the phone-code widget commits `+358` for the option `Åland Islands +358`, so verification compares by one-directional containment (**committed ⊆ selected option**). The reverse direction would let the spike's original failure pass, since `No` ⊆ `Norfolk Island`.
+- [x] 1.3 Verdict before building: drivable → continue; not drivable → stop and bring the CDP/`debugger` trade-off back as an explicit decision.
+      **VALIDATED** — drivable with ordinary events; the CDP seam stays unpaid. Out-of-scope typeahead widgets identify themselves: they open and offer zero `role=option` nodes (Stripe "Location (City)") or a single "Loading..." node (Scout "School"), so they need no special case.
 
 ## 2. Observation: options and grouping
 
