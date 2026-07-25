@@ -29,5 +29,19 @@
     reported the react-select combobox as deferred without touching it; dropped
     an invented cover-letter answer before it reached the browser. The model was
     a local stand-in returning a fixed plan — everything else was real.
-  - Still to do by hand: load the unpacked extension in Chrome and repeat on a
-    live ATS posting, which also exercises the frame fan-out and the panel UI.
+  - Then repeated in a real Chrome with the unpacked extension loaded, driving
+    the panel's own Autofill button — first on a local page whose form sits in an
+    iframe (proving the frame fan-out), then on two live Greenhouse postings
+    (Stripe, Scout Motors). Standard fields filled; every react-select widget
+    reported as deferred and left untouched; nothing submitted.
+  - Three defects the synthetic runs had hidden, now fixed with tests:
+    CSS-hidden controls (a recaptcha textarea, collapsed sections) were being
+    read as fields; the report named controls with no label, which cannot be
+    addressed; and ATS forms mark a field required with `aria-required`, which
+    the observation ignored. The report now leads with required fields and the
+    panel names a few and counts the rest.
+  - Known limit, for the widget slice: on Stripe the "left for you" list is led
+    by 30 country checkboxes — options of one multi-select question that the
+    wire sees as 30 separate controls. Grouping them needs the widget model the
+    next change introduces; guessing at it here would be the "smart filler" the
+    design rejects.

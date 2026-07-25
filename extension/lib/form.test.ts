@@ -30,6 +30,16 @@ describe('extractForm', () => {
     expect(fields[1]).toMatchObject({ index: 1, type: 'email', label: 'Email Address', required: false });
   });
 
+  it('treats aria-required as required, which is how ATS forms mark it', () => {
+    labeledInput('a', 'Employer', { type: 'text', 'aria-required': 'true' });
+    labeledInput('b', 'Nickname', { type: 'text' });
+
+    expect(extractForm(document).map((f) => [f.label, f.required])).toEqual([
+      ['Employer', true],
+      ['Nickname', false],
+    ]);
+  });
+
   it('skips hidden, submit and disabled controls', () => {
     labeledInput('a', 'Keep', { type: 'text' });
     labeledInput('b', 'Hidden', { type: 'hidden' });
@@ -38,6 +48,23 @@ describe('extractForm', () => {
 
     const fields = extractForm(document);
     expect(fields.map((f) => f.label)).toEqual(['Keep']);
+  });
+
+  it('skips controls the user cannot see', () => {
+    labeledInput('a', 'Keep', { type: 'text' });
+    // A real Greenhouse form carries one of these: a hidden recaptcha textarea.
+    const recaptcha = document.createElement('textarea');
+    recaptcha.setAttribute('name', 'g-recaptcha-response');
+    recaptcha.style.display = 'none';
+    // …and controls buried in a collapsed section.
+    const collapsed = document.createElement('div');
+    collapsed.style.display = 'none';
+    const buried = document.createElement('input');
+    buried.setAttribute('aria-label', 'Buried');
+    collapsed.append(buried);
+    document.body.append(recaptcha, collapsed);
+
+    expect(extractForm(document).map((f) => f.label)).toEqual(['Keep']);
   });
 
   it('captures select options', () => {

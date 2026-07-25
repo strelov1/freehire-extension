@@ -340,6 +340,17 @@
    * filler stays as the fallback until the agent path has proven itself — it
    * only knows a fixed set of labels, but it needs nothing but this browser.
    */
+  /**
+   * Names the first few labels and counts the rest. A real ATS form leaves
+   * dozens of fields untouched (Greenhouse alone contributes a checkbox per
+   * country), and a notice that lists them all is one the user cannot read.
+   */
+  function nameSome(labels: string[], shown = 5): string {
+    const trimmed = labels.map((l) => l.trim().replace(/\s+/g, ' ')).filter(Boolean);
+    if (trimmed.length <= shown) return trimmed.join(', ');
+    return `${trimmed.slice(0, shown).join(', ')} and ${trimmed.length - shown} more`;
+  }
+
   async function autofill() {
     const token = await getToken();
     if (!token || autofilling) return;
@@ -353,10 +364,10 @@
           : 'The agent found nothing on this form it could fill from your profile.',
       );
       if (report.deferred.length > 0) {
-        notices.push(`Not fillable yet (custom dropdowns): ${report.deferred.join(', ')}.`);
+        notices.push(`Not fillable yet (custom dropdowns): ${nameSome(report.deferred)}.`);
       }
       if (report.unmapped.length > 0) {
-        notices.push(`Left for you: ${report.unmapped.join(', ')}.`);
+        notices.push(`Left for you: ${nameSome(report.unmapped)}.`);
       }
     } catch (err) {
       notices.push(

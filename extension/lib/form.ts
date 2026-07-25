@@ -20,8 +20,23 @@ export function collectFillable(doc: Document): Fillable[] {
   return all.filter((el) => {
     if (el.disabled) return false;
     if (el instanceof HTMLInputElement && SKIP_TYPES.has(el.type)) return false;
+    if (isHidden(el)) return false;
     return true;
   });
+}
+
+/**
+ * True when the control is not on screen for the user — a display:none recaptcha
+ * textarea, a collapsed section, a widget's stashed input. `type=hidden` is
+ * already excluded above; this catches the CSS-hidden ones, which a real ATS
+ * form is full of and which the agent has no business reading or writing.
+ */
+function isHidden(el: Fillable): boolean {
+  if (el.hidden || el.closest('[hidden]')) return true;
+  // checkVisibility walks the ancestors for us. Where it is missing (an older
+  // browser), fall back to treating the control as visible rather than dropping
+  // fields we cannot judge.
+  return typeof el.checkVisibility === 'function' && !el.checkVisibility();
 }
 
 /** Serialises the page's form into indexed FormFields. Pure over the document. */
@@ -34,7 +49,9 @@ export function extractForm(doc: Document): FormField[] {
       type: el instanceof HTMLInputElement ? el.type : tag,
       label: extractLabel(el),
       name: el.getAttribute('name') ?? '',
-      required: el.required,
+      // A React-rendered ATS form typically validates in JS and marks the
+      // requirement with ARIA rather than the native attribute.
+      required: el.required || el.getAttribute('aria-required') === 'true',
       value: el.value ?? '',
       combo: isComboWidget(el),
     };
