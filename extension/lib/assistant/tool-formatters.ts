@@ -24,6 +24,8 @@ function truncate(s: string, n: number): string {
 // What each tool is doing, in the user's terms. The transcript reads as intent
 // ("Searching jobs") rather than as a function name.
 const LABELS: Record<string, string> = {
+  // Only a browsing session has this one — it is what the side panel is for.
+  read_current_page: 'Reading the page you are on',
   facets: 'Loading filters',
   search_jobs: 'Searching jobs',
   get_job: 'Reading a job posting',

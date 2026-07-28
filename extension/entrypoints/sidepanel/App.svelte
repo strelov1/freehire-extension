@@ -26,6 +26,9 @@
   import { ToolChannel } from '../../lib/tools/client';
   import { activeTabPage } from '../../lib/tools/page';
   import MatchCard from './MatchCard.svelte';
+  import ToolGroupList from './ToolGroupList.svelte';
+  import JobDeck from './JobDeck.svelte';
+  import { splitPresentingCalls } from '../../lib/assistant/deck';
 
   let chat = $state<ChatState>(initChat());
   // Local action feedback (autofill results, errors) — not part of a turn.
@@ -513,10 +516,19 @@
   {/if}
 
   <div class="messages">
-    {#each chat.messages as message}
-      <div class="message {message.role}" class:errored={message.errored}>
-        {message.text}{#if message.streaming && !message.text}<span class="dots">…</span>{/if}
-      </div>
+    {#each chat.messages as message, mi (mi)}
+      {@const split = splitPresentingCalls(message.tools, message.streaming)}
+      {#each split.decks as slot, di (di)}
+        <JobDeck {slot} />
+      {/each}
+      {#if split.rest.length > 0}
+        <ToolGroupList calls={split.rest} />
+      {/if}
+      {#if message.text || message.streaming}
+        <div class="message {message.role}" class:errored={message.errored}>
+          {message.text}{#if message.streaming && !message.text}<span class="dots">…</span>{/if}
+        </div>
+      {/if}
     {/each}
     {#each notices as notice}
       <div class="message system">{notice}</div>

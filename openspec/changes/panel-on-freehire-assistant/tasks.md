@@ -25,21 +25,21 @@ is a divergence and needs saying so in a comment.
 
 ## 4. What the user sees while it works
 
-- [ ] 4.1 Port `tool-formatters.ts` and its test; add a label for `read_current_page`.
-- [ ] 4.2 Port `ToolGroupList.svelte`, tightened for a 400px column.
-- [ ] 4.3 Port `deck.ts` and its test verbatim.
-- [ ] 4.4 Port `jobCache.ts` over `lib/freehire.ts`'s `getJob` — it needs the token the web's cookie made implicit. Test the dedupe and the eviction-on-failure.
-- [ ] 4.5 Port `JobDeck.svelte` / `JobDeckCard.svelte`, styled beside the existing `MatchCard`.
+- [x] 4.1 Port `tool-formatters.ts` and its test; add a label for `read_current_page`.
+- [x] 4.2 Port `ToolGroupList.svelte`, tightened for a 400px column.
+- [x] 4.3 Port `deck.ts` and its test verbatim.
+- [x] 4.4 Port `jobCache.ts` over `lib/freehire.ts`'s `getJob` — it needs the token the web's cookie made implicit. Test the dedupe and the eviction-on-failure.
+- [x] 4.5 Port `JobDeck.svelte` / `JobDeckCard.svelte`, styled beside the existing `MatchCard`.
 - [x] 4.6 Remove the "Read page" button and the snapshot-into-the-prompt path it drove.
 
 ## 5. Roy leaves
 
-- [ ] 5.1 Delete `lib/roy/` entirely.
-- [ ] 5.2 Remove `ROY_ORIGIN` from `env.d.ts` and `.env.production`.
-- [ ] 5.3 Rewrite the Roy passages in `AGENTS.md` and `README.md`: the panel talks to hire's assistant; `lib/assistant/` mirrors the web's, with the two divergences named.
-- [ ] 5.4 Delete `openspec/changes/connect-panel-to-roy/` and `docs/superpowers/specs/2026-07-24-panel-roy-chat-design.md`, both of which describe the world this replaces.
+- [x] 5.1 Delete `lib/roy/` entirely.
+- [x] 5.2 Remove `ROY_ORIGIN` from `env.d.ts` and `.env.production`.
+- [x] 5.3 Rewrite the Roy passages in `AGENTS.md` and `README.md`: the panel talks to hire's assistant; `lib/assistant/` mirrors the web's, with the two divergences named.
+- [x] 5.4 Delete `openspec/changes/connect-panel-to-roy/` and `docs/superpowers/specs/2026-07-24-panel-roy-chat-design.md`, both of which describe the world this replaces.
 
 ## 6. Verify
 
-- [ ] 6.1 `npm test`, `npm run check`, `npm run build`.
+- [x] 6.1 `npm test`, `npm run check`, `npm run build`.
 - [ ] 6.2 Load the built extension against a local hire and hold one conversation: a turn streams, a tool call renders, `read_current_page` returns the open page, cancelling stops a turn, and reopening the panel resumes it.

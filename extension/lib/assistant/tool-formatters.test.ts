@@ -17,6 +17,12 @@ const call = (name: string, input: unknown = {}, extra: Partial<ToolCall> = {}):
 });
 
 describe('toolLabel', () => {
+  // The panel's own tool. Without a label the transcript shows the raw function
+  // name for the one call that only ever happens here.
+  it('labels reading the current page', () => {
+    expect(toolLabel(call('read_current_page'))).toBe('Reading the page you are on');
+  });
+
   it('reads as intent, not as a function name', () => {
     expect(toolLabel(call('search_jobs'))).toBe('Searching jobs');
     expect(toolLabel(call('cv_edit'))).toBe('Updating your CV');
