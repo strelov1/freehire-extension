@@ -2,10 +2,11 @@
   import { onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { type RuntimeMessage, type PageSnapshot } from '../../lib/protocol';
-  import { RoyClient, type ServerError } from '../../lib/roy/client';
-  import { createSession, royWsUrl } from '../../lib/roy/session';
-  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/roy/chat';
-  import type { TurnEvent } from '../../lib/roy/wire';
+  import { createSession, getSession, SessionNotFound } from '../../lib/assistant/api';
+  import { sendTurn, type Turn } from '../../lib/assistant/client';
+  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/assistant/chat';
+  import { eventsFromTranscript } from '../../lib/assistant/wire';
+  import { recallSession, rememberSession, forgetSession } from '../../lib/assistant/session';
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
@@ -27,22 +28,17 @@
   import MatchCard from './MatchCard.svelte';
 
   let chat = $state<ChatState>(initChat());
-  // Local action feedback (autofill results, errors) — not part of a Roy turn.
+  // Local action feedback (autofill results, errors) — not part of a turn.
   let notices = $state<string[]>([]);
   let draft = $state('');
-  let connected = $state(false);
   let sending = $state(false);
   let chatError = $state('');
+  let restoring = $state(false);
 
-  // Roy transport — plain (non-reactive) refs; nothing here is rendered directly.
-  let client: RoyClient | null = null;
+  // The conversation this panel is holding, and the turn in flight if there is
+  // one. Plain refs: neither is rendered directly.
   let sessionId: string | null = null;
-  let attached = false;
-  let inputAcquired = false;
-  // The optimistic user message we already painted; suppress Roy's echoed
-  // `user_prompt` frame that matches it (see onFrame).
-  let pendingEcho: string | null = null;
-  let frameUnsub: (() => void) | null = null;
+  let turn: Turn | null = null;
 
   let user = $state<HireUser | null>(null);
   let authBusy = $state(false);
@@ -60,8 +56,8 @@
   let matchError = $state('');
 
   onMount(() => {
-    // The Roy connection + session are created lazily on the first message
-    // (see dispatch → ensureConnected), so an idle panel spawns no agent.
+    // The conversation is created lazily on the first message, so an idle panel
+    // starts nothing; a conversation held earlier is repainted here.
     void restoreSession();
 
     // Re-run the match when the user switches tabs or a page finishes loading,
@@ -76,8 +72,7 @@
     browser.tabs.onUpdated.addListener(onUpdated);
 
     return () => {
-      frameUnsub?.();
-      client?.close();
+      turn?.cancel();
       tools.stop();
       browser.tabs.onActivated.removeListener(refresh);
       browser.tabs.onUpdated.removeListener(onUpdated);
@@ -86,12 +81,41 @@
 
   async function restoreSession() {
     const token = await getToken();
-    if (token) {
-      user = await fetchMe(token);
-      if (user) {
-        tools.start(token);
-        void loadMatch();
+    if (!token) return;
+    user = await fetchMe(token);
+    if (!user) return;
+    tools.start(token);
+    void loadMatch();
+    void restoreConversation(token);
+  }
+
+  /**
+   * Repaint the conversation this panel was holding. The transcript is replayed
+   * through the same reducer a live turn folds through, so history and a running
+   * turn cannot render differently.
+   *
+   * A conversation the server no longer has (deleted from the web) is not an error
+   * the user can act on from here — forget it and let the next message start a
+   * fresh one.
+   */
+  async function restoreConversation(token: string) {
+    const remembered = await recallSession();
+    if (!remembered) return;
+    restoring = true;
+    try {
+      const { messages } = await getSession(remembered, token);
+      sessionId = remembered;
+      for (const event of eventsFromTranscript(messages)) {
+        chat = reduceTurnEvent(chat, event);
       }
+    } catch (err) {
+      if (err instanceof SessionNotFound) {
+        await forgetSession();
+      } else {
+        chatError = `Could not load your conversation: ${err instanceof Error ? err.message : 'error'}`;
+      }
+    } finally {
+      restoring = false;
     }
   }
 
@@ -229,97 +253,21 @@
     user = null;
     // Detach the wire too: it is authenticated as the user who just left.
     tools.stop();
-    // Drop the authenticated socket + session so a later sign-in never reuses
-    // the previous user's Roy session, and clear their conversation.
-    resetRoy();
-    chat = initChat();
-    notices = [];
-    chatError = '';
+    // Forget the conversation so a later sign-in never resumes the previous
+    // user's, and clear what is on screen.
+    await newChat();
   }
 
-  // Connect to Roy and attach to a (lazily created) session. Idempotent: safe to
-  // call before every dispatch.
-  //
-  // The session comes first, and not only because the socket has nothing to
-  // attach to without it: `POST /sessions` is plain HTTP, so a rejected token is
-  // reported as "auth required (HTTP 401)". The WebSocket handshake cannot say
-  // that — a browser hides the handshake's response code from script — so
-  // connecting first turned every auth failure into an opaque "failed to
-  // connect to wss://…".
-  async function ensureConnected(token: string) {
-    if (!sessionId) sessionId = await createSession(token);
-    if (!client) {
-      client = new RoyClient();
-      client.onStatus((s) => {
-        connected = s === 'open';
-        // A dropped socket never delivers a terminal `result`, and a `send` is
-        // fire-and-forget (nothing to reject), so unstick the turn and reset the
-        // transport. No reconnect — the next message starts a fresh session.
-        if (s === 'closed' || s === 'error') {
-          if (sending) chatError = 'Connection to the agent was lost. Try again.';
-          resetRoy();
-        }
-      });
-      // A turn that ends with an `error` event (agent crash, tool failure)
-      // instead of a terminal `result` would otherwise hang the turn forever.
-      client.onError((e: ServerError) => {
-        chatError = `The agent hit an error: ${e.message}`;
-        endTurn();
-      });
-      await client.connect(royWsUrl(), token);
-    }
-    if (!attached) {
-      // Subscribe BEFORE attaching so the `from_seq: 0` replay frames are caught.
-      // Guard against re-subscribing when a prior attach failed but left the sub
-      // in place — a second callback would double every frame.
-      if (!frameUnsub) {
-        frameUnsub = client.subscribeFrames(sessionId, (entry) => onFrame(entry.event));
-      }
-      await client.call({ op: 'attach', session: sessionId, from_seq: 0 }, 'attached');
-      attached = true;
-    }
-  }
-
-  // Tear down the Roy transport. Used on sign-out and on a dropped socket so a
-  // later send reconnects cleanly (refs are nulled before close() to avoid the
-  // onclose handler re-entering this).
-  function resetRoy() {
-    const c = client;
-    frameUnsub?.();
-    frameUnsub = null;
-    client = null;
-    sessionId = null;
-    attached = false;
-    inputAcquired = false;
-    sending = false;
-    connected = false;
-    c?.close();
-  }
-
-  function onFrame(event: TurnEvent) {
-    // Suppress the echoed user_prompt for a message we already showed optimistically.
-    if (event.type === 'user_prompt' && pendingEcho !== null && event.text === pendingEcho) {
-      pendingEcho = null;
-      return;
-    }
-    chat = reduceTurnEvent(chat, event);
-    if (event.type === 'result') endTurn();
-  }
-
-  function endTurn() {
-    sending = false;
-    if (client && sessionId && inputAcquired) {
-      inputAcquired = false;
-      void client
-        .call({ op: 'release_input', session: sessionId }, 'input_released')
-        .catch(() => {});
-    }
-  }
-
-  // Acquire the input lease, paint the user message optimistically (`displayText`
-  // may be a short label while `sendText` carries fuller context), and fire the
-  // prompt. `pendingEcho` is the SENT text so Roy's echoed frame is suppressed.
-  async function dispatch(sendText: string, displayText = sendText) {
+  /**
+   * Run one turn. A turn is a single POST whose response body streams the events,
+   * so there is nothing to connect, attach to, or lease — and cancelling is
+   * aborting that fetch, which the backend notices on its next write.
+   *
+   * The user's own message is NOT painted optimistically: the backend emits
+   * `user_prompt` as the turn's first frame, before the first model call, so the
+   * reducer paints it just as fast and there is no echo to suppress.
+   */
+  async function dispatch(text: string) {
     if (sending) return;
     // Claim the turn synchronously — before the first await — so a second action
     // during `getToken()` queues out via the guard instead of double-dispatching.
@@ -332,25 +280,37 @@
       return;
     }
     try {
-      await ensureConnected(token);
-      const id = sessionId!;
-      if (!inputAcquired) {
-        const acquired = await client!.call({ op: 'acquire_input', session: id }, 'input_acquired');
-        if (!acquired.acquired) {
-          sending = false;
-          chatError = 'The agent is busy (open in another tab?). Try again in a moment.';
-          return;
-        }
-        inputAcquired = true;
+      if (!sessionId) {
+        sessionId = (await createSession(token)).id;
+        await rememberSession(sessionId);
       }
-      pendingEcho = sendText;
-      chat = reduceTurnEvent(chat, { type: 'user_prompt', text: displayText });
-      client!.fire({ op: 'send', session: id, text: sendText });
+      turn = sendTurn(sessionId, text, token, (event) => {
+        chat = reduceTurnEvent(chat, event);
+      });
+      await turn.done;
     } catch (err) {
-      sending = false;
-      inputAcquired = false;
       chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+    } finally {
+      turn = null;
+      sending = false;
     }
+  }
+
+  /** Stop a turn in flight. The client answers with a `cancelled` result, so the
+   *  transcript still ends properly rather than trailing off. */
+  function stopTurn() {
+    turn?.cancel();
+  }
+
+  /** Start over. The old conversation stays on the server — it is in the web's
+   *  session rail — so this forgets it rather than deleting it. */
+  async function newChat() {
+    if (sending) stopTurn();
+    sessionId = null;
+    await forgetSession();
+    chat = initChat();
+    notices = [];
+    chatError = '';
   }
 
   function sendMessage() {
@@ -501,27 +461,14 @@
     }
   }
 
-  async function readPage() {
-    const reply = (await browser.runtime.sendMessage({
-      kind: 'GET_PAGE_SNAPSHOT',
-    } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-
-    if (reply?.kind !== 'PAGE_SNAPSHOT') return;
-    const { snapshot } = reply;
-    const headline = snapshot.headline || snapshot.title || snapshot.url || 'this page';
-    // Send the page to Roy as context, but paint a compact bubble (not the full
-    // page text) for the optimistic user message.
-    const context = `Here is the page I'm looking at:\n\nTitle: ${snapshot.title}\nURL: ${snapshot.url}\n\n${snapshot.text}`;
-    void dispatch(context, `📄 Read page: ${headline}`);
-  }
 </script>
 
 <div class="app">
   <header>
     <div class="top">
       <strong>freehire</strong>
-      <span class="status" class:online={connected}>
-        {connected ? 'connected' : user ? 'ready' : 'offline'}
+      <span class="status" class:online={sending}>
+        {sending ? 'working…' : user ? 'ready' : 'offline'}
       </span>
     </div>
     <div class="auth">
@@ -584,7 +531,13 @@
     {/if}
     {#if chat.messages.length === 0 && notices.length === 0}
       <p class="empty">
-        {user ? 'Read the current page or say something to start.' : 'Sign in to chat with the agent.'}
+        {#if restoring}
+          Loading your conversation…
+        {:else if user}
+          Ask about the page you're on — the agent can read it.
+        {:else}
+          Sign in to chat with the agent.
+        {/if}
       </p>
     {/if}
   </div>
@@ -595,14 +548,20 @@
         {autofilling ? 'Filling…' : 'Autofill'}
       </button>
     {/if}
-    <button class="ghost" onclick={readPage} disabled={!user || sending}>Read page</button>
+    {#if user && chat.messages.length > 0}
+      <button class="ghost" onclick={newChat} disabled={sending}>New chat</button>
+    {/if}
     <input
       placeholder={user ? 'Message the agent…' : 'Sign in to chat'}
       bind:value={draft}
       disabled={!user || sending}
       onkeydown={(e) => e.key === 'Enter' && sendMessage()}
     />
-    <button onclick={sendMessage} disabled={!user || sending}>Send</button>
+    {#if sending}
+      <button onclick={stopTurn}>Stop</button>
+    {:else}
+      <button onclick={sendMessage} disabled={!user}>Send</button>
+    {/if}
   </div>
 </div>
 

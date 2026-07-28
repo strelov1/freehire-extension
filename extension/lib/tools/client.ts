@@ -4,9 +4,9 @@
  * the only context that stays alive while the user is working (the MV3 service
  * worker is killed when idle, so it must not hold a durable connection).
  *
- * Auth mirrors the Roy client: browsers cannot set headers on `new WebSocket`,
- * so the session JWT rides the subprotocol slot next to a literal marker, which
- * is all the relay echoes back.
+ * Auth: browsers cannot set headers on `new WebSocket`, so the session JWT rides
+ * the subprotocol slot next to a literal marker, which is all the relay echoes
+ * back. (The HTTP side of the panel sends the same token as a Bearer header.)
  */
 
 import { HIRE_ORIGIN } from '../auth';

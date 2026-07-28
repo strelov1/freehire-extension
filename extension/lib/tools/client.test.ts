@@ -3,6 +3,7 @@ import { respondTo } from './client';
 import type { PageBridge } from './executor';
 
 const page: PageBridge = {
+  readPage: async () => ({ url: 'https://example.test/', title: '', headline: '', text: '' }),
   readForm: async () => ({ fields: [], uploads: [] }),
   fillSimple: async (fills) => fills.map((f) => ({ label: f.label, status: 'filled' as const })),
   combobox: async () => ({ status: 'not_found' }),

@@ -13,6 +13,12 @@ async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined>
 }
 
 export const activeTabPage: PageBridge = {
+  async readPage() {
+    const reply = await ask({ kind: 'GET_PAGE_SNAPSHOT' });
+    if (reply?.kind !== 'PAGE_SNAPSHOT') throw new Error('could not read the page');
+    return reply.snapshot;
+  },
+
   async readForm(): Promise<FormObservation> {
     const reply = await ask({ kind: 'GET_FRAMED_FORM' });
     if (reply?.kind !== 'FRAMED_FORM') throw new Error('could not read the page');

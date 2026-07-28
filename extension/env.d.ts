@@ -7,6 +7,4 @@
 interface ImportMetaEnv {
   /** Where hire's API and sign-in live, e.g. https://freehire.me. */
   readonly WXT_HIRE_ORIGIN?: string;
-  /** Where the Roy agent lives, e.g. https://agent.freehire.me. */
-  readonly WXT_ROY_ORIGIN?: string;
 }

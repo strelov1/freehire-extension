@@ -1,8 +1,7 @@
 /**
  * Shapes for the in-extension transport: `RuntimeMessage` over chrome.runtime
  * (panel <-> background <-> content), discriminated by `kind`. The chat itself
- * talks to Roy directly over its own control protocol (see `lib/roy/`), not
- * through here.
+ * talks to hire's assistant over HTTP (see `lib/assistant/`), not through here.
  */
 
 /** A read of whatever page the user is currently looking at. */

@@ -1,19 +1,14 @@
-// Pure presentation logic for the panel chat: folds the streamed `TurnEvent`s
-// into a message list. Ported from the freehire web assistant
-// (`web/src/lib/assistant/chat.ts`), kept out of the Svelte component so the
-// accumulation is unit-testable without a DOM.
+// Pure presentation logic for the assistant chat: folds the streamed
+// `TurnEvent`s into a message list, kept out of the component so the
+// accumulation is unit-testable (vitest) without a DOM — mirroring how
+// `matchAnalysis.ts` isolates `reduceMatchEvent`.
 
 import type { TurnEvent } from './wire';
-
-/** One tool call the assistant made during a turn. Kept minimal — the panel
- *  accumulates these but does not yet expand their details in the UI. */
-export interface ToolCall {
-  name: string;
-  input: unknown;
-}
+import type { ToolCall } from './tool-formatters';
 
 /** One rendered message. Assistant messages accumulate `text` (the reply),
- *  `thinking` (secondary, never mixed into the reply), and `tools` while
+ *  `thinking` (secondary, never mixed into the reply), and `tools` (each tool
+ *  call with its arguments and, once it comes back, its result) while
  *  `streaming`; `errored` is set when the turn ends with an error. User messages
  *  carry only `text`. */
 export interface ChatMessage {
@@ -48,12 +43,39 @@ export function reduceTurnEvent(prev: ChatState, event: TurnEvent): ChatState {
         ...m,
         tools: [...m.tools, { name: event.name, input: event.input }],
       }));
+    case 'tool_result':
+      return upsertAssistant(prev, (m) => ({ ...m, tools: attachResult(m.tools, event) }));
     case 'result':
-      return closeAssistant(prev, event.is_error);
+      return closeAssistant(prev, event.is_error ?? false);
     default:
-      // system, note, usage, raw, and anything not in the union — ignored.
+      // usage, and anything not in the union — ignored.
       return prev;
   }
+}
+
+/** Attach a result to the call it answers: the FIRST still-unanswered call of
+ *  that name. The backend runs a round's calls in order and emits their results
+ *  in the same order, so first-unanswered is the right match — taking the most
+ *  recent one instead would hand the second search's result to the first search.
+ *  Keying by name rather than by call id keeps the reducer free of id
+ *  bookkeeping; a result for a call we never saw is dropped rather than
+ *  fabricating a card. */
+function attachResult(
+  tools: ToolCall[],
+  event: { name: string; result?: string; is_error?: boolean },
+): ToolCall[] {
+  for (let i = 0; i < tools.length; i++) {
+    const tool = tools[i];
+    if (!tool || tool.name !== event.name || tool.result !== undefined) continue;
+    const answered: ToolCall = {
+      name: tool.name,
+      input: tool.input,
+      result: event.result ?? '',
+      isError: event.is_error === true,
+    };
+    return [...tools.slice(0, i), answered, ...tools.slice(i + 1)];
+  }
+  return tools;
 }
 
 function userMessage(text: string): ChatMessage {
@@ -65,7 +87,8 @@ function newAssistant(): ChatMessage {
 }
 
 /** Apply `fn` to the open (streaming) assistant message, or start a new one if
- *  the last message isn't an open assistant turn. */
+ *  the last message isn't an open assistant turn (e.g. after a user prompt or a
+ *  closed turn). */
 function upsertAssistant(prev: ChatState, fn: (m: ChatMessage) => ChatMessage): ChatState {
   const last = prev.messages[prev.messages.length - 1];
   if (last && last.role === 'assistant' && last.streaming) {
@@ -74,7 +97,8 @@ function upsertAssistant(prev: ChatState, fn: (m: ChatMessage) => ChatMessage): 
   return { messages: [...prev.messages, fn(newAssistant())] };
 }
 
-/** Close the open assistant turn. A result with no open turn is ignored. */
+/** Close the open assistant turn. A result with no open turn is ignored (never
+ *  fabricates an empty message). */
 function closeAssistant(prev: ChatState, errored: boolean): ChatState {
   const last = prev.messages[prev.messages.length - 1];
   if (!last || last.role !== 'assistant' || !last.streaming) return prev;

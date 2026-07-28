@@ -1,7 +1,10 @@
 /**
- * The browser-tool wire: the harness-agnostic frames a "brain" (hosted Roy today,
- * a local harness later) and this extension exchange through hire's relay. Raw
- * JSON, request/response, correlated by `id` — an MCP wrapper is a later concern.
+ * The browser-tool wire: the harness-agnostic frames a "brain" and this extension
+ * exchange through hire's relay. Raw JSON, request/response, correlated by `id` —
+ * an MCP wrapper is a later concern.
+ *
+ * Two brains drive it today, both inside hire: the agentic autofill, and the
+ * assistant's `read_current_page` when a conversation runs the `browse` preset.
  *
  * This file is the contract; keep it in step with hire's relay
  * (`internal/browsertools`) which forwards these frames verbatim.
