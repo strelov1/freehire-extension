@@ -88,6 +88,12 @@ Data collected — declare all three:
   page read this way is kept in that conversation's transcript, which the user can
   read and delete from their freehire account.
 
+  Reads are bounded and visible. Only ordinary web pages are read: a browser
+  settings page, another extension's page, or a local file is refused before it is
+  touched. And every read is named in the conversation itself — the panel shows
+  which page it read, without the query string, so a read the user did not expect
+  is one they can see.
+
 Not collected: health, financial, location, personal communications, browsing
 history, keystroke logging.
 

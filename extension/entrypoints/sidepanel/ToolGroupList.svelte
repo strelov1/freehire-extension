@@ -8,6 +8,7 @@
     toolErrorMessage,
     type ToolCall,
   } from '../../lib/assistant/tool-formatters';
+  import { pageReadTarget } from '../../lib/assistant/pageRead';
 
   // The tool calls of one assistant message, rendered as collapsed rows. Ported
   // from the web app's `ToolGroupList.svelte`; the formatting logic is shared
@@ -39,6 +40,11 @@
         {#each g as c, ci (ci)}
           <li>
             <span class:err={c.isError}>{callLine(c)}</span>
+            {#if pageReadTarget(c)}
+              <!-- Which page was read, so a read the agent chose to make is one the
+                   user can see. Query and fragment are dropped upstream. -->
+              <code class="page">{pageReadTarget(c)}</code>
+            {/if}
             {#if toolErrorMessage(c)}
               <span class="err">— {toolErrorMessage(c)}</span>
             {:else if nonEmptyInput(c.input)}
@@ -102,5 +108,11 @@
 
   .err {
     color: #b42318;
+  }
+
+  /* The page a read touched: quiet, but legible enough to notice a surprise. */
+  .page {
+    color: #4b5563;
+    word-break: break-all;
   }
 </style>
