@@ -15,7 +15,12 @@ async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined>
 export const activeTabPage: PageBridge = {
   async readPage() {
     const reply = await ask({ kind: 'GET_PAGE_SNAPSHOT' });
-    if (reply?.kind !== 'PAGE_SNAPSHOT') throw new Error('could not read the page');
+    // The background answers "no active tab" with an empty snapshot rather than a
+    // failure, which suits the match card (it just shows nothing). Here it would
+    // hand the agent a blank page to narrate about, so an empty url is an error.
+    if (reply?.kind !== 'PAGE_SNAPSHOT' || !reply.snapshot.url) {
+      throw new Error('no page to read: the active tab could not be reached');
+    }
     return reply.snapshot;
   },
 

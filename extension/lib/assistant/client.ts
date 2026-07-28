@@ -36,15 +36,28 @@ export function sendTurn(
   const controller = new AbortController();
 
   const done = (async () => {
-    const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/messages`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ text }),
-      signal: controller.signal,
-    });
+    // Divergence from the web's copy: the fetch is inside the abort guard, not
+    // outside it. Stop renders the moment a turn starts, so it is reachable before
+    // the response headers arrive — and there the abort rejects the fetch itself,
+    // which the web surfaces as a raw AbortError on screen.
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if (controller.signal.aborted) {
+        onEvent({ type: 'result', stop_reason: 'cancelled' });
+        return;
+      }
+      throw e;
+    }
     if (!res.ok) {
       throw new Error(`could not send the message (${res.status})`);
     }

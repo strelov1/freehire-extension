@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { HIRE_ORIGIN } from '../../lib/auth';
   import { companyLogoUrl } from '../../lib/freehire';
   import { loadJob } from '../../lib/assistant/jobCache';
   import type { DeckEntry } from '../../lib/assistant/deck';
@@ -21,7 +22,7 @@
   // slug once, on purpose. Re-reading it reactively is the bug being avoided.
   const jobRequest = untrack(() => loadJob(entry.slug));
 
-  let jobUrl = $derived(`https://freehire.me/jobs/${encodeURIComponent(entry.slug)}`);
+  let jobUrl = $derived(`${HIRE_ORIGIN}/jobs/${encodeURIComponent(entry.slug)}`);
 </script>
 
 <div class="card">

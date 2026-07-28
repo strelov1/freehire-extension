@@ -75,6 +75,22 @@ describe('sendTurn', () => {
     expect(seen.at(-1)).toEqual({ type: 'result', stop_reason: 'cancelled' });
   });
 
+  // Stop renders as soon as a turn starts, so it is reachable before the response
+  // headers arrive. There the abort rejects the fetch, not the stream read.
+  it('reports cancelling before the response arrives as cancelled too', async () => {
+    vi.stubGlobal('fetch', (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      (init.signal as AbortSignal).addEventListener('abort', () =>
+        reject(new DOMException('aborted', 'AbortError')));
+    }));
+
+    const seen: TurnEvent[] = [];
+    const turn = sendTurn('s1', 'hi', 'tok', (e) => seen.push(e));
+    turn.cancel();
+    await turn.done;
+
+    expect(seen).toEqual([{ type: 'result', stop_reason: 'cancelled' }]);
+  });
+
   it('rejects when the turn could not be started', async () => {
     vi.stubGlobal('fetch', async () => ({ ok: false, status: 503, body: null }));
 

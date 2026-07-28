@@ -107,6 +107,11 @@
     restoring = true;
     try {
       const { messages } = await getSession(remembered, token);
+      // The composer unlocks as soon as the user is known, so a message can be
+      // sent while this read is in flight — and that message created its own
+      // conversation. Adopting the remembered one now would point the panel at A
+      // while storage holds B, and lose the exchange the user just watched.
+      if (sessionId) return;
       sessionId = remembered;
       for (const event of eventsFromTranscript(messages)) {
         chat = reduceTurnEvent(chat, event);
@@ -292,7 +297,18 @@
       });
       await turn.done;
     } catch (err) {
-      chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+      // An aborted fetch is the Stop button, not a failure: the stream may drop
+      // before the response headers arrive, which lands here rather than in the
+      // client's own abort path.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'cancelled' });
+      } else {
+        chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+        // Close the open message. Without this the turn keeps its `streaming`
+        // flag: the dots pulse forever and the deck skeletons never resolve, so a
+        // dead connection reads as an agent still working.
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'error', is_error: true });
+      }
     } finally {
       turn = null;
       sending = false;

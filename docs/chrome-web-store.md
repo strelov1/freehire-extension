@@ -42,8 +42,9 @@ Still manual, not in the repo: the privacy-policy page on `freehire.me` and
 > freehire puts a job-application agent in Chrome's side panel, next to whatever
 > page you are on.
 >
-> - Ask it about the posting you are reading. "Read page" hands the visible text
->   of the current tab to the agent so it can answer in context.
+> - Ask it about the posting you are reading. It reads the page itself when your
+>   question needs it, so you can just say "is this a fit?" and get an answer
+>   about the tab in front of you.
 > - See how the posting matches your freehire profile — a deterministic
 >   skill-coverage card, not a guess.
 > - Let it fill the application form. It reads the form's fields and writes the
@@ -66,7 +67,7 @@ Paste one per field in the dashboard.
 | `scripting` | Injects the reader into the active tab's frames on demand, so the agent can read the application form and fill the fields the user asked it to. |
 | `activeTab` | Scopes page access to the tab the user explicitly acted on from the panel. |
 | `identity` | `launchWebAuthFlow` runs "Sign in with freehire" and returns the session token to the extension. Not used for Google account data. |
-| `host_permissions: <all_urls>` | Applications live on arbitrary hosts — Greenhouse, Lever, Workday, Ashby, and thousands of company career pages. The user decides which page the agent works on, so the host set cannot be enumerated in advance. Page content is read only when the user asks (opening the panel, "Read page", Autofill), never in the background. |
+| `host_permissions: <all_urls>` | Applications live on arbitrary hosts — Greenhouse, Lever, Workday, Ashby, and thousands of company career pages. The user decides which page the agent works on, so the host set cannot be enumerated in advance. Page content is read only while the panel is open and only in service of what the user asked for — the question they typed, or the Autofill they pressed. Nothing is read in the background: the channel the reads travel over exists only for as long as the panel is. |
 
 ## Privacy practices
 
@@ -77,9 +78,15 @@ Data collected — declare all three:
 - **Authentication information** — the freehire session JWT, kept in
   `chrome.storage.local`.
 - **Website content** — the URL, title and visible text (capped at 5000
-  characters, see `extension/lib/scraper.ts`) of the page the user hands to the
-  agent, plus the form fields Autofill reads. Sent to `agent.freehire.me` to run
-  the agent turn and to `freehire.me` to resolve the posting.
+  characters, see `extension/lib/scraper.ts`) of the page open while the user is
+  asking about it, plus the form fields Autofill reads. Sent to `freehire.me`,
+  which is the only host this extension contacts.
+
+  Two things worth stating plainly, because they changed: the agent now decides
+  when to read the page — during a turn, when the user's question is about what is
+  in front of them — rather than the user pressing a button to hand it over. And a
+  page read this way is kept in that conversation's transcript, which the user can
+  read and delete from their freehire account.
 
 Not collected: health, financial, location, personal communications, browsing
 history, keystroke logging.
