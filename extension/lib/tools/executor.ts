@@ -6,13 +6,33 @@
  * a browser.
  */
 
-import type { LabelFill, FillOutcome, FillStatus, ComboboxStep, ComboboxReply } from '../protocol';
-import type { FramedField, ToolCall, ToolResult } from './wire';
+import type {
+  LabelFill,
+  FillOutcome,
+  FillStatus,
+  ComboboxStep,
+  ComboboxReply,
+  PageSnapshot,
+} from '../protocol';
+import type { FramedField, FramedUpload, ToolCall, ToolResult } from './wire';
+
+/** What one read of the page reports: its questions, and its resume uploads. */
+export interface FormObservation {
+  fields: FramedField[];
+  /**
+   * The uploads on offer. Not fill targets — they travel because they are what
+   * marks a form as an application rather than a job-alert signup, and nothing
+   * downstream can see them otherwise.
+   */
+  uploads: FramedUpload[];
+}
 
 /** Whatever can read and write the page the user is looking at. */
 export interface PageBridge {
-  /** Every frame's fillable controls, each tagged with its frame. */
-  readForm(): Promise<FramedField[]>;
+  /** What the tab is showing, read live: url, title, headline and visible text. */
+  readPage(): Promise<PageSnapshot>;
+  /** Every frame's observation, folded into one, each entry tagged with its frame. */
+  readForm(): Promise<FormObservation>;
   /** Applies the fills across the page's frames, one outcome per requested fill. */
   fillSimple(fills: LabelFill[]): Promise<FillOutcome[]>;
   /** Runs one step against the widget, wherever in the page's frames it lives. */
@@ -35,8 +55,12 @@ const COMBOBOX_TOOLS: Record<string, ComboboxStep['action']> = {
 export async function executeTool(call: ToolCall, page: PageBridge): Promise<ToolResult> {
   try {
     switch (call.tool) {
+      // The posting's prose, not the application form's fields — this is what the
+      // assistant reads when the user refers to the page in front of them.
+      case 'read_page':
+        return { id: call.id, result: await page.readPage() };
       case 'read_form':
-        return { id: call.id, result: { fields: await page.readForm() } };
+        return { id: call.id, result: await page.readForm() };
       case 'fill_simple': {
         const fills = readFills(call.args);
         return { id: call.id, result: { outcomes: await page.fillSimple(fills) } };

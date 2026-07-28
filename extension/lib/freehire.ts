@@ -51,14 +51,40 @@ export interface JobMatch {
   missing: string[];
 }
 
+/**
+ * What a failed call tells the user. hire answers `{"error": "<why>"}`, and that
+ * sentence is the whole diagnosis: `/me/autofill/run` alone returns 409 for three
+ * unrelated states — no browser attached, no form on the page, no model
+ * configured — so a bare status collapses them into one line nobody can act on.
+ * The status still travels for a bug report; the path only stands in when the
+ * body says nothing, as a proxy's HTML error page does. Pure over its input.
+ */
+export function apiErrorMessage(path: string, status: number, body: string): string {
+  const reason = serverReason(body);
+  return reason ? `${reason} (HTTP ${status})` : `${path} → HTTP ${status}`;
+}
+
+function serverReason(body: string): string {
+  try {
+    const { error } = JSON.parse(body) as { error?: unknown };
+    return typeof error === 'string' ? error.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Reads the body once: as the payload when the call succeeded, as the reason when it did not. */
+async function unwrap<T>(path: string, res: Response): Promise<T> {
+  const body = await res.text();
+  if (!res.ok) throw new Error(apiErrorMessage(path, res.status, body));
+  return (JSON.parse(body) as { data: T }).data;
+}
+
 async function getData<T>(path: string, token: string): Promise<T> {
   const res = await fetch(`${HIRE_ORIGIN}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    throw new Error(`${path} → HTTP ${res.status}`);
-  }
-  return ((await res.json()) as { data: T }).data;
+  return unwrap<T>(path, res);
 }
 
 async function postData<T>(path: string, body: unknown, token: string): Promise<T> {
@@ -67,10 +93,7 @@ async function postData<T>(path: string, body: unknown, token: string): Promise<
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    throw new Error(`${path} → HTTP ${res.status}`);
-  }
-  return ((await res.json()) as { data: T }).data;
+  return unwrap<T>(path, res);
 }
 
 export function getJob(slug: string, token: string): Promise<FreehireJob> {

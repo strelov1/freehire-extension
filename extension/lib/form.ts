@@ -1,15 +1,15 @@
 /**
  * The extension's "eyes + hands" for a page's form: a serialisable observation
- * (extractForm) the agent can reason over, and an executor (applyFills) that
+ * (extractForm) the agent can reason over, and an executor (fillByLabel) that
  * writes values back, dispatching native input/change events so React/Angular
  * ATS forms register the change. Both work in *questions* (collectQuestions),
  * not raw controls, so a question rendered as 29 checkboxes stays one field; a
- * question is addressed by a stable index into that list, which keeps an
- * observation and its fills in lockstep without shipping DOM nodes across the
- * content↔panel boundary.
+ * question is addressed by its label, which survives both a re-render between
+ * the observation and the fill and the fan-out across a tab's frames, neither of
+ * which a position in the list does.
  */
 
-import type { FieldTag, FormField, Fill, LabelFill, FillOutcome } from './protocol';
+import type { FieldTag, FormField, LabelFill, FillOutcome, Upload } from './protocol';
 
 type Fillable = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
@@ -139,14 +139,47 @@ function isHidden(el: Fillable): boolean {
 
 /** Serialises the page's form into indexed FormFields. Pure over the document. */
 export function extractForm(doc: Document): FormField[] {
-  return collectQuestions(doc).map(describeQuestion);
+  const forms = Array.from(doc.querySelectorAll('form'));
+  return collectQuestions(doc).map((q, i) => describeQuestion(q, i, forms));
 }
 
-function describeQuestion({ label, controls }: Question, index: number): FormField {
+/**
+ * The resume/CV uploads the page is offering, each tagged with the form that
+ * owns it.
+ *
+ * A file input is never a fill target — `SKIP_TYPES` drops it from the question
+ * list, and its value cannot be set from script anyway — but it is the one thing
+ * that reliably marks a form as an *application*. Measured across Greenhouse
+ * (board, embed and site-with-iframe), Lever and Ashby: every open application
+ * offered one, and no page that was not showing an application did. That is what
+ * lets a job-alert signup be told from a short application form, which counting
+ * fields or required markers cannot do.
+ */
+export function extractUploads(doc: Document): Upload[] {
+  const forms = Array.from(doc.querySelectorAll('form'));
+  return Array.from(doc.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+    .filter((el) => !el.disabled && !isHidden(el))
+    .map((el) => ({ form: formIndex(el, forms) }));
+}
+
+/**
+ * The index of the form a control answers within, or -1 when it sits outside
+ * one. Matched with `isSameNode` rather than `indexOf`, because that is the
+ * identity check that holds however the two references were obtained — the
+ * reference `closest` hands back need not be the very object the query list
+ * holds.
+ */
+function formIndex(el: Element, forms: HTMLFormElement[]): number {
+  const owner = el.closest('form');
+  return owner ? forms.findIndex((f) => f.isSameNode(owner)) : -1;
+}
+
+function describeQuestion({ label, controls }: Question, index: number, forms: HTMLFormElement[]): FormField {
   const [el] = controls;
   const tag = el.tagName.toLowerCase() as FieldTag;
   const field: FormField = {
     index,
+    form: formIndex(el, forms),
     tag,
     type: el instanceof HTMLInputElement ? el.type : tag,
     label,
@@ -314,25 +347,89 @@ export function normalizeLabel(label: string): string {
   return label.toLowerCase().replace(/\*/g, '').replace(/\s+/g, ' ').trim();
 }
 
-/** Maps a control's label to a canonical profile key, or null when unknown. */
+/**
+ * Maps a control's label to a canonical profile key, or null when unknown.
+ *
+ * The synonym has to *open* the label, not merely appear in it. A real form asks
+ * "Are you authorized to lawfully work for Roku in the country to which you are
+ * applying?" — a substring match hands that Yes/No question the `country` key,
+ * and the profile's country goes into a radio group. Anchoring at the front
+ * still reads every label the live ATS forms produce, decorations and all
+ * ("First Name (required) e85441b6"), because those trail the question rather
+ * than lead it.
+ */
 export function matchFieldKey(label: string): string | null {
   const normalized = normalizeLabel(label);
   if (!normalized) return null;
   for (const [key, synonyms] of Object.entries(FIELD_SYNONYMS)) {
-    if (synonyms.some((s) => normalized === s || normalized.includes(s))) return key;
+    if (synonyms.some((s) => opensWith(normalized, s))) return key;
   }
   return null;
 }
 
-/** Applies fills by index, returning how many questions were answered. */
-export function applyFills(doc: Document, fills: Fill[]): number {
-  const questions = collectQuestions(doc);
-  let written = 0;
-  for (const { index, value } of fills) {
-    const question = questions[index];
-    if (question && answerQuestion(question, value)) written++;
+/** True when the label opens with this synonym and ends it at a word boundary. */
+function opensWith(label: string, synonym: string): boolean {
+  if (!label.startsWith(synonym)) return false;
+  // "Citywide preference" is not a `city` question.
+  return !/[a-z0-9]/.test(label.charAt(synonym.length));
+}
+
+/**
+ * Whether the page is showing an application form at all.
+ *
+ * A careers page routinely keeps the application behind an "Apply" button and
+ * shows a job-alert signup meanwhile — on Roku that signup asks for a first
+ * name, a last name and an email, all required, which no count of fields can
+ * distinguish from a short application. The resume upload can: see
+ * `extractUploads`.
+ */
+export function looksLikeApplication(uploads: { form: number }[]): boolean {
+  return uploads.length > 0;
+}
+
+/**
+ * Narrows an observation to the one form the application is asking, identified
+ * by the upload sitting in it. Without this a page carrying both an application
+ * and a job-alert signup gets both written, since each has its own "Email".
+ *
+ * Both the frame and the form identify the group: an ATS iframe numbers its own
+ * forms from zero, so the frame alone would merge two unrelated first forms.
+ * When the upload names a group holding no questions — a page rendering them
+ * outside its form element — every field is kept, because filling nothing at all
+ * is the worse answer.
+ */
+export function scopeToApplication<T extends { frame: number; form: number }>(
+  fields: T[],
+  uploads: { frame: number; form: number }[],
+): T[] {
+  const [target] = uploads;
+  if (!target) return fields;
+  const scoped = fields.filter((f) => f.frame === target.frame && f.form === target.form);
+  return scoped.length > 0 ? scoped : fields;
+}
+
+/**
+ * The fills a profile justifies against the questions a page asks: each
+ * recognised label paired with the value it maps to. A label the profile knows
+ * nothing about, or knows only as a blank, is left for the user rather than
+ * written over with an empty string.
+ *
+ * A repeated label is asked for once. A careers page routinely carries two forms
+ * — the application and a job-alert signup — and `fillByLabel` answers the first
+ * question carrying a label, so the repeats only pad the wire. Pure over its
+ * input; the page is not touched here.
+ */
+export function planLabelFills(fields: { label: string }[], values: Record<string, string>): LabelFill[] {
+  const asked = new Set<string>();
+  const fills: LabelFill[] = [];
+  for (const { label } of fields) {
+    const key = matchFieldKey(label);
+    const value = key ? (values[key] ?? '') : '';
+    if (!value || asked.has(normalizeLabel(label))) continue;
+    asked.add(normalizeLabel(label));
+    fills.push({ label, value });
   }
-  return written;
+  return fills;
 }
 
 /**

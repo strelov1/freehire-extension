@@ -6,18 +6,28 @@
 
 import { browser } from 'wxt/browser';
 import type { ComboboxStep, LabelFill, RuntimeMessage } from '../protocol';
-import type { PageBridge } from './executor';
-import type { FramedField } from './wire';
+import type { FormObservation, PageBridge } from './executor';
 
 async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined> {
   return (await browser.runtime.sendMessage(message)) as RuntimeMessage | undefined;
 }
 
 export const activeTabPage: PageBridge = {
-  async readForm(): Promise<FramedField[]> {
+  async readPage() {
+    const reply = await ask({ kind: 'GET_PAGE_SNAPSHOT' });
+    // The background answers "no active tab" with an empty snapshot rather than a
+    // failure, which suits the match card (it just shows nothing). Here it would
+    // hand the agent a blank page to narrate about, so an empty url is an error.
+    if (reply?.kind !== 'PAGE_SNAPSHOT' || !reply.snapshot.url) {
+      throw new Error('no page to read: the active tab could not be reached');
+    }
+    return reply.snapshot;
+  },
+
+  async readForm(): Promise<FormObservation> {
     const reply = await ask({ kind: 'GET_FRAMED_FORM' });
     if (reply?.kind !== 'FRAMED_FORM') throw new Error('could not read the page');
-    return reply.fields;
+    return { fields: reply.fields, uploads: reply.uploads };
   },
 
   async fillSimple(fills: LabelFill[]) {

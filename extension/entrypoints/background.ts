@@ -2,6 +2,7 @@ import {
   emptySnapshot,
   type RuntimeMessage,
   type FramedField,
+  type FramedUpload,
   type LabelFill,
   type FillOutcome,
   type ComboboxStep,
@@ -26,15 +27,7 @@ export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message: RuntimeMessage) => {
     switch (message.kind) {
       case 'GET_PAGE_SNAPSHOT':
-        // The page the user is looking at is the TOP document, so the snapshot is
-        // asked of that frame by id. Broadcasting it instead answers from whichever
-        // frame replies first, and on a page carrying an ad iframe that is routinely
-        // the ad: no og:title or h1, so the card came out titled "This page", and the
-        // match was scored against the ad's text rather than the posting's.
-        return relayToActiveTab(message, TOP_FRAME);
-      case 'GET_FORM':
-      case 'APPLY_FILLS':
-        return relayToActiveTab(message);
+        return readTopFrameSnapshot();
       case 'GET_FRAMED_FORM':
         return readFramedForm();
       case 'FILL_BY_LABEL':
@@ -51,34 +44,36 @@ export default defineBackground(() => {
 const TOP_FRAME = 0;
 
 /**
- * Relays one message to the active tab. `frameId` addresses a single frame;
- * without it the message goes to every frame the content script runs in and the
- * reply is whichever one answers first — fine only where any frame will do.
+ * Reads the page the user is looking at, which is the TOP document — so the
+ * snapshot is asked of that frame by id.
+ *
+ * Nothing here may address the active tab without naming a frame:
+ * `tabs.sendMessage` with no `frameId` reaches every frame the content script
+ * runs in and resolves with whichever answers first, which is reliably the
+ * emptiest one. That cost us the match card once (an ad iframe answered, so the
+ * card came out titled "This page") and the deterministic autofill again (a
+ * Google Maps embed on a careers page won the race 10 times out of 10, and the
+ * panel reported "no form fields on this page" while the form sat in frame 0).
+ * Everything else fans out over `eachFrame` and folds the answers together.
  */
-async function relayToActiveTab(
-  message: RuntimeMessage,
-  frameId?: number,
-): Promise<RuntimeMessage | undefined> {
+async function readTopFrameSnapshot(): Promise<RuntimeMessage> {
   const tabId = await activeTabId();
-  if (tabId == null) {
-    // Only the snapshot request has a meaningful empty reply.
-    return message.kind === 'GET_PAGE_SNAPSHOT'
-      ? { kind: 'PAGE_SNAPSHOT', snapshot: emptySnapshot() }
-      : undefined;
-  }
-  return frameId === undefined
-    ? browser.tabs.sendMessage(tabId, message)
-    : browser.tabs.sendMessage(tabId, message, { frameId });
+  if (tabId == null) return { kind: 'PAGE_SNAPSHOT', snapshot: emptySnapshot() };
+  return browser.tabs.sendMessage(tabId, { kind: 'GET_PAGE_SNAPSHOT' } satisfies RuntimeMessage, {
+    frameId: TOP_FRAME,
+  });
 }
 
-/** Reads every frame of the active tab, tagging each field with its frame. */
+/** Reads every frame of the active tab, tagging each observation with its frame. */
 async function readFramedForm(): Promise<RuntimeMessage> {
   const fields: FramedField[] = [];
+  const uploads: FramedUpload[] = [];
   await eachFrame({ kind: 'GET_FRAMED_FORM' }, (reply, frame) => {
     if (reply?.kind !== 'FORM') return;
     for (const field of reply.fields) fields.push({ ...field, frame });
+    for (const upload of reply.uploads) uploads.push({ ...upload, frame });
   });
-  return { kind: 'FRAMED_FORM', fields };
+  return { kind: 'FRAMED_FORM', fields, uploads };
 }
 
 /**

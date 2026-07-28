@@ -6,6 +6,7 @@ import type { ComboboxStep } from '../protocol';
 
 const field = (label: string, frame = 0): FramedField => ({
   index: 0,
+  form: 0,
   frame,
   tag: 'input',
   type: 'text',
@@ -18,7 +19,8 @@ const field = (label: string, frame = 0): FramedField => ({
 
 function bridge(over: Partial<PageBridge> = {}): PageBridge {
   return {
-    readForm: async () => [field('Email')],
+    readPage: async () => ({ url: 'https://example.test/', title: '', headline: '', text: '' }),
+    readForm: async () => ({ fields: [field('Email')], uploads: [] }),
     fillSimple: async (fills) => fills.map((f) => ({ label: f.label, status: 'filled' as const })),
     combobox: async () => ({ status: 'not_found' as const }),
     ...over,
@@ -27,13 +29,61 @@ function bridge(over: Partial<PageBridge> = {}): PageBridge {
 
 describe('executeTool', () => {
   it('answers read_form with the page fields, tagged by frame', async () => {
-    const page = bridge({ readForm: async () => [field('Email'), field('Phone', 3)] });
+    const page = bridge({
+      readForm: async () => ({
+        fields: [field('Email'), field('Phone', 3)],
+        uploads: [{ frame: 3, form: 0 }],
+      }),
+    });
 
     const res = await executeTool({ id: 'c1', tool: 'read_form' }, page);
 
     expect(res.id).toBe('c1');
     expect(res.error).toBeUndefined();
-    expect(res.result).toEqual({ fields: [field('Email'), field('Phone', 3)] });
+    // The uploads travel with the fields: they are what says the page is showing
+    // an application at all, and the harness has no other way to see them.
+    expect(res.result).toEqual({
+      fields: [field('Email'), field('Phone', 3)],
+      uploads: [{ frame: 3, form: 0 }],
+    });
+  });
+
+  it('answers read_page with what the tab is showing', async () => {
+    const page = bridge({
+      readPage: async () => ({
+        url: 'https://jobs.example.test/senior-go',
+        title: 'Senior Go Engineer — Example',
+        headline: 'Senior Go Engineer',
+        text: 'We run a large Go fleet and are hiring.',
+      }),
+    });
+
+    const res = await executeTool({ id: 'p1', tool: 'read_page' }, page);
+
+    expect(res.id).toBe('p1');
+    expect(res.error).toBeUndefined();
+    expect(res.result).toEqual({
+      url: 'https://jobs.example.test/senior-go',
+      title: 'Senior Go Engineer — Example',
+      headline: 'Senior Go Engineer',
+      text: 'We run a large Go fleet and are hiring.',
+    });
+  });
+
+  // The assistant is blocked on this call's id: a page it cannot read has to come
+  // back as an answer, because silence is indistinguishable from a hang.
+  it('answers read_page with an error when the tab cannot be reached', async () => {
+    const page = bridge({
+      readPage: async () => {
+        throw new Error('could not reach the page');
+      },
+    });
+
+    const res = await executeTool({ id: 'p2', tool: 'read_page' }, page);
+
+    expect(res.id).toBe('p2');
+    expect(res.result).toBeUndefined();
+    expect(res.error).toBe('could not reach the page');
   });
 
   it('answers fill_simple with an outcome per requested fill', async () => {

@@ -1,8 +1,38 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { extractForm, matchFieldKey, applyFills, fillByLabel } from './form';
+import {
+  extractForm,
+  extractUploads,
+  matchFieldKey,
+  planLabelFills,
+  fillByLabel,
+  looksLikeApplication,
+  scopeToApplication,
+} from './form';
 
 function reset() {
   document.body.replaceChildren();
+}
+
+/** A <form> holding a labelled control, and optionally a resume upload. */
+function formWith(id: string, labels: string[], upload = false) {
+  const form = document.createElement('form');
+  form.id = id;
+  for (const text of labels) {
+    const label = document.createElement('label');
+    const control = document.createElement('input');
+    control.type = 'text';
+    control.id = `${id}-${text}`;
+    label.setAttribute('for', control.id);
+    label.textContent = text;
+    form.append(label, control);
+  }
+  if (upload) {
+    const file = document.createElement('input');
+    file.type = 'file';
+    form.append(file);
+  }
+  document.body.append(form);
+  return form;
 }
 
 function labeledInput(id: string, labelText: string, attrs: Record<string, string> = {}) {
@@ -85,24 +115,107 @@ describe('extractForm', () => {
   });
 });
 
-describe('applyFills', () => {
+describe('extractUploads', () => {
   beforeEach(reset);
 
-  it('writes values by index and dispatches a bubbling input event', () => {
-    const first = labeledInput('fn', 'First Name', { type: 'text' });
-    const email = labeledInput('em', 'Email', { type: 'email' });
-    let inputEvents = 0;
-    first.addEventListener('input', (e) => e.bubbles && inputEvents++);
+  it('reports a resume upload with the form that owns it', () => {
+    formWith('alerts', ['Email']);
+    formWith('application', ['First Name'], true);
 
-    const written = applyFills(document, [
-      { index: 0, value: 'Ilya' },
-      { index: 1, value: 'ilya@example.com' },
+    expect(extractUploads(document)).toEqual([{ form: 1 }]);
+  });
+
+  it('reports an upload standing outside any form, as Ashby renders it', () => {
+    const file = document.createElement('input');
+    file.type = 'file';
+    document.body.append(file);
+
+    expect(extractUploads(document)).toEqual([{ form: -1 }]);
+  });
+
+  it('ignores an upload the user cannot see', () => {
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.hidden = true;
+    document.body.append(file);
+
+    expect(extractUploads(document)).toEqual([]);
+  });
+});
+
+describe('looksLikeApplication', () => {
+  // Measured across Greenhouse (board, embed, and site-with-iframe), Lever and
+  // Ashby: every open application offered a resume upload, and every page that
+  // was not showing one offered none — including Roku's job-alert signup, which
+  // is otherwise indistinguishable from a small application (5 fields, 3 of them
+  // required).
+  it('recognises a form offering a resume upload', () => {
+    expect(looksLikeApplication([{ form: 0 }])).toBe(true);
+  });
+
+  it('rejects a page whose only visible form asks for nothing to upload', () => {
+    expect(looksLikeApplication([])).toBe(false);
+  });
+});
+
+describe('scopeToApplication', () => {
+  const fields = [
+    { frame: 0, form: 1, label: 'First Name' },
+    { frame: 0, form: 1, label: 'Email' },
+    { frame: 0, form: 2, label: 'Email' },
+  ];
+
+  it('keeps the form the upload sits in, leaving a second form alone', () => {
+    // Roku carries both an application and a job-alert signup, each asking for a
+    // name and an email; only the application takes a resume.
+    expect(scopeToApplication(fields, [{ frame: 0, form: 1 }])).toEqual([
+      { frame: 0, form: 1, label: 'First Name' },
+      { frame: 0, form: 1, label: 'Email' },
     ]);
+  });
 
-    expect(written).toBe(2);
-    expect(first.value).toBe('Ilya');
-    expect(email.value).toBe('ilya@example.com');
-    expect(inputEvents).toBe(1);
+  it('scopes to the frame as well, since an ATS iframe carries its own form 0', () => {
+    const framed = [
+      { frame: 0, form: 0, label: 'Search' },
+      { frame: 18, form: 0, label: 'First Name' },
+    ];
+    expect(scopeToApplication(framed, [{ frame: 18, form: 0 }])).toEqual([
+      { frame: 18, form: 0, label: 'First Name' },
+    ]);
+  });
+
+  it('keeps every field when the upload names a group holding none', () => {
+    // Rather than fill nothing at all: a page that renders its questions outside
+    // the form the upload sits in is unusual, but silence would be worse.
+    expect(scopeToApplication(fields, [{ frame: 3, form: 9 }])).toEqual(fields);
+  });
+});
+
+describe('planLabelFills', () => {
+  const values = { firstName: 'Ilya', email: 'ilya@example.com', github: '' };
+
+  it('addresses each recognised question by its own label', () => {
+    expect(planLabelFills([{ label: 'First Name' }, { label: 'Email Address' }], values)).toEqual([
+      { label: 'First Name', value: 'Ilya' },
+      { label: 'Email Address', value: 'ilya@example.com' },
+    ]);
+  });
+
+  it('leaves a question the profile knows nothing about alone', () => {
+    expect(planLabelFills([{ label: 'Why do you want to work here?' }], values)).toEqual([]);
+  });
+
+  it('skips a key the profile carries no value for', () => {
+    expect(planLabelFills([{ label: 'GitHub' }], values)).toEqual([]);
+  });
+
+  it('asks for a repeated label once', () => {
+    // A careers page routinely carries two forms — the application and a
+    // job-alert signup — each with its own "Email". `fillByLabel` answers the
+    // first question carrying the label, so asking twice only doubles the wire.
+    expect(planLabelFills([{ label: 'Email' }, { label: 'email ' }], values)).toEqual([
+      { label: 'Email', value: 'ilya@example.com' },
+    ]);
   });
 });
 
@@ -431,17 +544,17 @@ describe('extractForm grouping', () => {
     expect(extractForm(document).map((f) => f.label)).toEqual(['Yes', 'No']);
   });
 
-  it('keeps index and control in lockstep once a group has collapsed the field list', () => {
-    // The group sits *before* a plain field, so a stale index space would send
-    // the email into one of the group's checkboxes.
-    checkboxGroup('Countries', ['Germany', 'Poland', 'Spain']);
+  it('reaches a plain field standing behind a group', () => {
+    // The group sits *before* the plain field and collapses three controls into
+    // one question, so anything addressing by position has to survive that.
+    const [germany] = checkboxGroup('Countries', ['Germany', 'Poland', 'Spain']);
     const email = labeledInput('em', 'Email', { type: 'email' });
 
-    const fields = extractForm(document);
-    const emailField = fields.find((f) => f.label === 'Email')!;
-    applyFills(document, [{ index: emailField.index, value: 'ilya@example.com' }]);
+    const emailField = extractForm(document).find((f) => f.label === 'Email')!;
+    fillByLabel(document, [{ label: emailField.label, value: 'ilya@example.com' }]);
 
     expect(email.value).toBe('ilya@example.com');
+    expect(germany.checked).toBe(false);
   });
 });
 
@@ -544,5 +657,26 @@ describe('matchFieldKey', () => {
 
   it('returns null for an unknown label', () => {
     expect(matchFieldKey('Favourite colour')).toBeNull();
+  });
+
+  it('still reads a label an ATS has decorated', () => {
+    // Greenhouse suffixes each label with a hash of its own.
+    expect(matchFieldKey('First Name\n    (required)\n  \n  e85441b6')).toBe('firstName');
+    expect(matchFieldKey('LinkedIn Profile 947f0cc4')).toBe('linkedin');
+  });
+
+  it('does not let a word buried in a question claim a profile key', () => {
+    // Live on Roku. "country" appears mid-sentence in a Yes/No question; taking
+    // it would put the user's country into a radio group.
+    expect(
+      matchFieldKey(
+        'Are you authorized to lawfully work for Roku in the country to which you are applying?',
+      ),
+    ).toBeNull();
+    expect(matchFieldKey('Which city office would your manager be based in?')).toBeNull();
+  });
+
+  it('does not match a longer word that merely starts the same way', () => {
+    expect(matchFieldKey('Citywide preference')).toBeNull();
   });
 });

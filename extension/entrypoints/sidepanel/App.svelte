@@ -2,10 +2,11 @@
   import { onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { type RuntimeMessage, type PageSnapshot } from '../../lib/protocol';
-  import { RoyClient, type ServerError } from '../../lib/roy/client';
-  import { createSession, royWsUrl } from '../../lib/roy/session';
-  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/roy/chat';
-  import type { TurnEvent } from '../../lib/roy/wire';
+  import { createSession, getSession, SessionNotFound } from '../../lib/assistant/api';
+  import { sendTurn, type Turn } from '../../lib/assistant/client';
+  import { initChat, reduceTurnEvent, type ChatState } from '../../lib/assistant/chat';
+  import { eventsFromTranscript } from '../../lib/assistant/wire';
+  import { recallSession, rememberSession, forgetSession } from '../../lib/assistant/session';
   import { signIn, signOut, getToken, fetchMe, type HireUser } from '../../lib/auth';
   import {
     freehireSlugFromUrl,
@@ -21,28 +22,26 @@
     type JobMatch,
     type AutofillProfile,
   } from '../../lib/freehire';
-  import { matchFieldKey } from '../../lib/form';
+  import { planLabelFills, looksLikeApplication, scopeToApplication } from '../../lib/form';
   import { ToolChannel } from '../../lib/tools/client';
   import { activeTabPage } from '../../lib/tools/page';
   import MatchCard from './MatchCard.svelte';
+  import ToolGroupList from './ToolGroupList.svelte';
+  import JobDeck from './JobDeck.svelte';
+  import { splitPresentingCalls } from '../../lib/assistant/deck';
 
   let chat = $state<ChatState>(initChat());
-  // Local action feedback (autofill results, errors) — not part of a Roy turn.
+  // Local action feedback (autofill results, errors) — not part of a turn.
   let notices = $state<string[]>([]);
   let draft = $state('');
-  let connected = $state(false);
   let sending = $state(false);
   let chatError = $state('');
+  let restoring = $state(false);
 
-  // Roy transport — plain (non-reactive) refs; nothing here is rendered directly.
-  let client: RoyClient | null = null;
+  // The conversation this panel is holding, and the turn in flight if there is
+  // one. Plain refs: neither is rendered directly.
   let sessionId: string | null = null;
-  let attached = false;
-  let inputAcquired = false;
-  // The optimistic user message we already painted; suppress Roy's echoed
-  // `user_prompt` frame that matches it (see onFrame).
-  let pendingEcho: string | null = null;
-  let frameUnsub: (() => void) | null = null;
+  let turn: Turn | null = null;
 
   let user = $state<HireUser | null>(null);
   let authBusy = $state(false);
@@ -60,8 +59,8 @@
   let matchError = $state('');
 
   onMount(() => {
-    // The Roy connection + session are created lazily on the first message
-    // (see dispatch → ensureConnected), so an idle panel spawns no agent.
+    // The conversation is created lazily on the first message, so an idle panel
+    // starts nothing; a conversation held earlier is repainted here.
     void restoreSession();
 
     // Re-run the match when the user switches tabs or a page finishes loading,
@@ -76,8 +75,7 @@
     browser.tabs.onUpdated.addListener(onUpdated);
 
     return () => {
-      frameUnsub?.();
-      client?.close();
+      turn?.cancel();
       tools.stop();
       browser.tabs.onActivated.removeListener(refresh);
       browser.tabs.onUpdated.removeListener(onUpdated);
@@ -86,12 +84,46 @@
 
   async function restoreSession() {
     const token = await getToken();
-    if (token) {
-      user = await fetchMe(token);
-      if (user) {
-        tools.start(token);
-        void loadMatch();
+    if (!token) return;
+    user = await fetchMe(token);
+    if (!user) return;
+    tools.start(token);
+    void loadMatch();
+    void restoreConversation(token);
+  }
+
+  /**
+   * Repaint the conversation this panel was holding. The transcript is replayed
+   * through the same reducer a live turn folds through, so history and a running
+   * turn cannot render differently.
+   *
+   * A conversation the server no longer has (deleted from the web) is not an error
+   * the user can act on from here — forget it and let the next message start a
+   * fresh one.
+   */
+  async function restoreConversation(token: string) {
+    const remembered = await recallSession();
+    if (!remembered) return;
+    restoring = true;
+    try {
+      const { messages } = await getSession(remembered, token);
+      // The composer unlocks as soon as the user is known, so a message can be
+      // sent while this read is in flight — and that message created its own
+      // conversation. Adopting the remembered one now would point the panel at A
+      // while storage holds B, and lose the exchange the user just watched.
+      if (sessionId) return;
+      sessionId = remembered;
+      for (const event of eventsFromTranscript(messages)) {
+        chat = reduceTurnEvent(chat, event);
       }
+    } catch (err) {
+      if (err instanceof SessionNotFound) {
+        await forgetSession();
+      } else {
+        chatError = `Could not load your conversation: ${err instanceof Error ? err.message : 'error'}`;
+      }
+    } finally {
+      restoring = false;
     }
   }
 
@@ -229,90 +261,21 @@
     user = null;
     // Detach the wire too: it is authenticated as the user who just left.
     tools.stop();
-    // Drop the authenticated socket + session so a later sign-in never reuses
-    // the previous user's Roy session, and clear their conversation.
-    resetRoy();
-    chat = initChat();
-    notices = [];
-    chatError = '';
+    // Forget the conversation so a later sign-in never resumes the previous
+    // user's, and clear what is on screen.
+    await newChat();
   }
 
-  // Connect to Roy and attach to a (lazily created) session. Idempotent: safe to
-  // call before every dispatch.
-  async function ensureConnected(token: string) {
-    if (!client) {
-      client = new RoyClient();
-      client.onStatus((s) => {
-        connected = s === 'open';
-        // A dropped socket never delivers a terminal `result`, and a `send` is
-        // fire-and-forget (nothing to reject), so unstick the turn and reset the
-        // transport. No reconnect — the next message starts a fresh session.
-        if (s === 'closed' || s === 'error') {
-          if (sending) chatError = 'Connection to the agent was lost. Try again.';
-          resetRoy();
-        }
-      });
-      // A turn that ends with an `error` event (agent crash, tool failure)
-      // instead of a terminal `result` would otherwise hang the turn forever.
-      client.onError((e: ServerError) => {
-        chatError = `The agent hit an error: ${e.message}`;
-        endTurn();
-      });
-      await client.connect(royWsUrl(), token);
-    }
-    if (!sessionId) sessionId = await createSession(token);
-    if (!attached) {
-      // Subscribe BEFORE attaching so the `from_seq: 0` replay frames are caught.
-      // Guard against re-subscribing when a prior attach failed but left the sub
-      // in place — a second callback would double every frame.
-      if (!frameUnsub) {
-        frameUnsub = client.subscribeFrames(sessionId, (entry) => onFrame(entry.event));
-      }
-      await client.call({ op: 'attach', session: sessionId, from_seq: 0 }, 'attached');
-      attached = true;
-    }
-  }
-
-  // Tear down the Roy transport. Used on sign-out and on a dropped socket so a
-  // later send reconnects cleanly (refs are nulled before close() to avoid the
-  // onclose handler re-entering this).
-  function resetRoy() {
-    const c = client;
-    frameUnsub?.();
-    frameUnsub = null;
-    client = null;
-    sessionId = null;
-    attached = false;
-    inputAcquired = false;
-    sending = false;
-    connected = false;
-    c?.close();
-  }
-
-  function onFrame(event: TurnEvent) {
-    // Suppress the echoed user_prompt for a message we already showed optimistically.
-    if (event.type === 'user_prompt' && pendingEcho !== null && event.text === pendingEcho) {
-      pendingEcho = null;
-      return;
-    }
-    chat = reduceTurnEvent(chat, event);
-    if (event.type === 'result') endTurn();
-  }
-
-  function endTurn() {
-    sending = false;
-    if (client && sessionId && inputAcquired) {
-      inputAcquired = false;
-      void client
-        .call({ op: 'release_input', session: sessionId }, 'input_released')
-        .catch(() => {});
-    }
-  }
-
-  // Acquire the input lease, paint the user message optimistically (`displayText`
-  // may be a short label while `sendText` carries fuller context), and fire the
-  // prompt. `pendingEcho` is the SENT text so Roy's echoed frame is suppressed.
-  async function dispatch(sendText: string, displayText = sendText) {
+  /**
+   * Run one turn. A turn is a single POST whose response body streams the events,
+   * so there is nothing to connect, attach to, or lease — and cancelling is
+   * aborting that fetch, which the backend notices on its next write.
+   *
+   * The user's own message is NOT painted optimistically: the backend emits
+   * `user_prompt` as the turn's first frame, before the first model call, so the
+   * reducer paints it just as fast and there is no echo to suppress.
+   */
+  async function dispatch(text: string) {
     if (sending) return;
     // Claim the turn synchronously — before the first await — so a second action
     // during `getToken()` queues out via the guard instead of double-dispatching.
@@ -325,25 +288,48 @@
       return;
     }
     try {
-      await ensureConnected(token);
-      const id = sessionId!;
-      if (!inputAcquired) {
-        const acquired = await client!.call({ op: 'acquire_input', session: id }, 'input_acquired');
-        if (!acquired.acquired) {
-          sending = false;
-          chatError = 'The agent is busy (open in another tab?). Try again in a moment.';
-          return;
-        }
-        inputAcquired = true;
+      if (!sessionId) {
+        sessionId = (await createSession(token)).id;
+        await rememberSession(sessionId);
       }
-      pendingEcho = sendText;
-      chat = reduceTurnEvent(chat, { type: 'user_prompt', text: displayText });
-      client!.fire({ op: 'send', session: id, text: sendText });
+      turn = sendTurn(sessionId, text, token, (event) => {
+        chat = reduceTurnEvent(chat, event);
+      });
+      await turn.done;
     } catch (err) {
+      // An aborted fetch is the Stop button, not a failure: the stream may drop
+      // before the response headers arrive, which lands here rather than in the
+      // client's own abort path.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'cancelled' });
+      } else {
+        chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
+        // Close the open message. Without this the turn keeps its `streaming`
+        // flag: the dots pulse forever and the deck skeletons never resolve, so a
+        // dead connection reads as an agent still working.
+        chat = reduceTurnEvent(chat, { type: 'result', stop_reason: 'error', is_error: true });
+      }
+    } finally {
+      turn = null;
       sending = false;
-      inputAcquired = false;
-      chatError = err instanceof Error ? err.message : 'Could not reach the agent.';
     }
+  }
+
+  /** Stop a turn in flight. The client answers with a `cancelled` result, so the
+   *  transcript still ends properly rather than trailing off. */
+  function stopTurn() {
+    turn?.cancel();
+  }
+
+  /** Start over. The old conversation stays on the server — it is in the web's
+   *  session rail — so this forgets it rather than deleting it. */
+  async function newChat() {
+    if (sending) stopTurn();
+    sessionId = null;
+    await forgetSession();
+    chat = initChat();
+    notices = [];
+    chatError = '';
   }
 
   function sendMessage() {
@@ -405,8 +391,10 @@
         notices.push(`Left for you: ${nameSome(report.unmapped)}.`);
       }
     } catch (err) {
+      // The server's own sentence, not just the status: /me/autofill/run answers
+      // 409 for three unrelated states, and only that sentence says which.
       notices.push(
-        `Agent autofill unavailable (${err instanceof Error ? err.message : 'error'}) — using the basic filler.`,
+        `Agent autofill unavailable: ${err instanceof Error ? err.message : 'error'} — using the basic filler.`,
       );
       await deterministicAutofill(token);
     } finally {
@@ -414,57 +402,92 @@
     }
   }
 
-  async function deterministicAutofill(token: string) {
+  /**
+   * The fallback filler, over the same frame-aware primitives the agent drives:
+   * an apply form is routinely served from an ATS iframe, and a careers page
+   * carrying any other iframe would otherwise be answered by whichever frame
+   * replied first. Addressing questions by label rather than by position also
+   * keeps the read and the write on the same question when a form re-renders
+   * between them.
+   */
+  /**
+   * The fill the user has been offered but not yet confirmed, because the page
+   * does not look like it is showing an application form. Held so "Fill anyway"
+   * runs the same pass rather than re-reading a page that may have moved on.
+   */
+  let overrideFill = $state<(() => Promise<void>) | null>(null);
+
+  async function runOverrideFill() {
+    const run = overrideFill;
+    if (!run || autofilling) return;
+    overrideFill = null;
+    autofilling = true;
+    try {
+      await run();
+    } finally {
+      autofilling = false;
+    }
+  }
+
+  async function deterministicAutofill(token: string, force = false) {
     try {
       const formReply = (await browser.runtime.sendMessage({
-        kind: 'GET_FORM',
+        kind: 'GET_FRAMED_FORM',
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-      if (formReply?.kind !== 'FORM' || formReply.fields.length === 0) {
+      if (formReply?.kind !== 'FRAMED_FORM' || formReply.fields.length === 0) {
         notices.push('No form fields found on this page.');
         return;
       }
-      const values = profileToValues(await getAutofillProfile(token));
-      const fills = formReply.fields.flatMap((f) => {
-        const key = matchFieldKey(f.label);
-        const value = key ? values[key] : '';
-        return key && value ? [{ index: f.index, value }] : [];
-      });
+
+      // A careers page keeps the application behind an "Apply" button and shows a
+      // job-alert signup meanwhile; filling that one silently is worse than
+      // declining, so the user is told and can insist.
+      if (!force && !looksLikeApplication(formReply.uploads)) {
+        notices.push(
+          `This doesn't look like the application form — ${formReply.fields.length} field${
+            formReply.fields.length === 1 ? '' : 's'
+          } are showing and none of them takes a CV. Open the application on the page, then try again.`,
+        );
+        overrideFill = () => deterministicAutofill(token, true);
+        return;
+      }
+      overrideFill = null;
+
+      // One form, not every question on the page: an application and a job-alert
+      // signup each have their own "Email".
+      const scoped = scopeToApplication(formReply.fields, formReply.uploads);
+      const fills = planLabelFills(scoped, profileToValues(await getAutofillProfile(token)));
       if (fills.length === 0) {
         notices.push('Nothing matched your profile on this form.');
         return;
       }
       const applied = (await browser.runtime.sendMessage({
-        kind: 'APPLY_FILLS',
+        kind: 'FILL_BY_LABEL',
         fills,
       } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-      const n = applied?.kind === 'FILLS_APPLIED' ? applied.written : 0;
+      const outcomes = applied?.kind === 'FILL_OUTCOMES' ? applied.outcomes : [];
+      const n = outcomes.filter((o) => o.status === 'filled').length;
       notices.push(`✓ Autofilled ${n} field${n === 1 ? '' : 's'} — review before submitting.`);
+
+      // A custom-widget combobox commits whatever its own listbox highlights, so
+      // the simple filler declines it rather than writing a wrong value.
+      const deferred = outcomes.filter((o) => o.status === 'deferred_combobox').map((o) => o.label);
+      if (deferred.length > 0) {
+        notices.push(`Not fillable yet (custom dropdowns): ${nameSome(deferred)}.`);
+      }
     } catch (err) {
       notices.push(`Autofill failed: ${err instanceof Error ? err.message : 'error'}`);
     }
   }
 
-  async function readPage() {
-    const reply = (await browser.runtime.sendMessage({
-      kind: 'GET_PAGE_SNAPSHOT',
-    } satisfies RuntimeMessage)) as RuntimeMessage | undefined;
-
-    if (reply?.kind !== 'PAGE_SNAPSHOT') return;
-    const { snapshot } = reply;
-    const headline = snapshot.headline || snapshot.title || snapshot.url || 'this page';
-    // Send the page to Roy as context, but paint a compact bubble (not the full
-    // page text) for the optimistic user message.
-    const context = `Here is the page I'm looking at:\n\nTitle: ${snapshot.title}\nURL: ${snapshot.url}\n\n${snapshot.text}`;
-    void dispatch(context, `📄 Read page: ${headline}`);
-  }
 </script>
 
 <div class="app">
   <header>
     <div class="top">
       <strong>freehire</strong>
-      <span class="status" class:online={connected}>
-        {connected ? 'connected' : user ? 'ready' : 'offline'}
+      <span class="status" class:online={sending}>
+        {sending ? 'working…' : user ? 'ready' : 'offline'}
       </span>
     </div>
     <div class="auth">
@@ -509,20 +532,40 @@
   {/if}
 
   <div class="messages">
-    {#each chat.messages as message}
-      <div class="message {message.role}" class:errored={message.errored}>
-        {message.text}{#if message.streaming && !message.text}<span class="dots">…</span>{/if}
-      </div>
+    {#each chat.messages as message, mi (mi)}
+      {@const split = splitPresentingCalls(message.tools, message.streaming)}
+      {#each split.decks as slot, di (di)}
+        <JobDeck {slot} />
+      {/each}
+      {#if split.rest.length > 0}
+        <ToolGroupList calls={split.rest} />
+      {/if}
+      {#if message.text || message.streaming}
+        <div class="message {message.role}" class:errored={message.errored}>
+          {message.text}{#if message.streaming && !message.text}<span class="dots">…</span>{/if}
+        </div>
+      {/if}
     {/each}
     {#each notices as notice}
       <div class="message system">{notice}</div>
     {/each}
+    {#if overrideFill}
+      <div class="message system">
+        <button class="link" onclick={runOverrideFill} disabled={autofilling}>Fill it anyway</button>
+      </div>
+    {/if}
     {#if chatError}
       <div class="message system err">{chatError}</div>
     {/if}
     {#if chat.messages.length === 0 && notices.length === 0}
       <p class="empty">
-        {user ? 'Read the current page or say something to start.' : 'Sign in to chat with the agent.'}
+        {#if restoring}
+          Loading your conversation…
+        {:else if user}
+          Ask about the page you're on — the agent can read it.
+        {:else}
+          Sign in to chat with the agent.
+        {/if}
       </p>
     {/if}
   </div>
@@ -533,14 +576,20 @@
         {autofilling ? 'Filling…' : 'Autofill'}
       </button>
     {/if}
-    <button class="ghost" onclick={readPage} disabled={!user || sending}>Read page</button>
+    {#if user && chat.messages.length > 0}
+      <button class="ghost" onclick={newChat} disabled={sending}>New chat</button>
+    {/if}
     <input
       placeholder={user ? 'Message the agent…' : 'Sign in to chat'}
       bind:value={draft}
       disabled={!user || sending}
       onkeydown={(e) => e.key === 'Enter' && sendMessage()}
     />
-    <button onclick={sendMessage} disabled={!user || sending}>Send</button>
+    {#if sending}
+      <button onclick={stopTurn}>Stop</button>
+    {:else}
+      <button onclick={sendMessage} disabled={!user}>Send</button>
+    {/if}
   </div>
 </div>
 

@@ -1,8 +1,7 @@
 /**
  * Shapes for the in-extension transport: `RuntimeMessage` over chrome.runtime
  * (panel <-> background <-> content), discriminated by `kind`. The chat itself
- * talks to Roy directly over its own control protocol (see `lib/roy/`), not
- * through here.
+ * talks to hire's assistant over HTTP (see `lib/assistant/`), not through here.
  */
 
 /** A read of whatever page the user is currently looking at. */
@@ -23,8 +22,15 @@ export type FieldTag = 'input' | 'select' | 'textarea';
  * `legend` is one field offering their labels as `options` — see `Question`.
  */
 export interface FormField {
-  /** Position in the page's question list — the index `Fill` addresses. */
+  /** Position in the page's question list — reported, not used to address it. */
   index: number;
+  /**
+   * The `<form>` this question answers within, as an index into the frame's
+   * forms, or -1 when it stands outside one (Ashby renders its application that
+   * way). Pairs with `Upload.form` to tell an application from a signup sharing
+   * the page.
+   */
+  form: number;
   tag: FieldTag;
   type: string;
   /** The question's text: a control's label, or a group's legend. */
@@ -45,15 +51,24 @@ export interface FormField {
   options?: string[];
 }
 
+/**
+ * A resume/CV upload the page offers. Never a fill target — a file input's value
+ * cannot be set from script — but it is what marks a form as an application
+ * rather than a job-alert signup. See `extractUploads`.
+ */
+export interface Upload {
+  /** The `<form>` that owns it, indexed as `FormField.form` is. */
+  form: number;
+}
+
 /** A control plus the tab frame it lives in; 0 is the top document. */
 export interface FramedField extends FormField {
   frame: number;
 }
 
-/** A value to write into the question at `index`. */
-export interface Fill {
-  index: number;
-  value: string;
+/** An upload plus the tab frame it lives in. */
+export interface FramedUpload extends Upload {
+  frame: number;
 }
 
 /**
@@ -115,14 +130,13 @@ export interface ComboboxReply {
 export type RuntimeMessage =
   | { kind: 'GET_PAGE_SNAPSHOT' }
   | { kind: 'PAGE_SNAPSHOT'; snapshot: PageSnapshot }
-  | { kind: 'GET_FORM' }
-  | { kind: 'FORM'; fields: FormField[] }
-  | { kind: 'APPLY_FILLS'; fills: Fill[] }
-  | { kind: 'FILLS_APPLIED'; written: number }
-  // The browser-tool primitives: read every frame, and fill by label. Both fan
-  // out across the tab's frames in the background relay.
+  | { kind: 'FORM'; fields: FormField[]; uploads: Upload[] }
+  // Reading a form and filling it both fan out across the tab's frames in the
+  // background relay: an apply form is routinely served from an ATS iframe, and
+  // a page carrying any other iframe (a map, an ad) would otherwise be answered
+  // by whichever frame replied first — in practice the empty one.
   | { kind: 'GET_FRAMED_FORM' }
-  | { kind: 'FRAMED_FORM'; fields: FramedField[] }
+  | { kind: 'FRAMED_FORM'; fields: FramedField[]; uploads: FramedUpload[] }
   | { kind: 'FILL_BY_LABEL'; fills: LabelFill[] }
   | { kind: 'FILL_OUTCOMES'; outcomes: FillOutcome[] }
   // Driving a custom-widget combobox: one step, offered to every frame, since
