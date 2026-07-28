@@ -116,12 +116,18 @@ export function runAgentAutofill(token: string): Promise<AutofillReport> {
   return postData<AutofillReport>('/api/v1/me/autofill/run', {}, token);
 }
 
-/** What the server did with a page we offered it. */
-export type ResolveStatus = 'found' | 'imported' | 'queued';
+/** What the server did with a page we offered it.
+ *  - `found`    the catalog already carried the posting
+ *  - `tracked`  imported, and freehire already crawls this company's board
+ *  - `imported` imported, and the board behind it is now queued for onboarding
+ *  - `queued`   nothing could read the page, so the link went to manual triage */
+export type ResolveStatus = 'found' | 'tracked' | 'imported' | 'queued';
 
 export interface ResolvedPage {
   public_slug: string | null;
   status: ResolveStatus;
+  /** Set only for `tracked`: the company freehire already covers. */
+  company_slug?: string;
 }
 
 /**
@@ -130,7 +136,7 @@ export interface ResolvedPage {
  * maintainer when it cannot. Authenticated — it makes the server fetch the URL.
  */
 export function resolveJob(url: string, token: string): Promise<ResolvedPage> {
-  return postData<ResolvedPage>('/api/v1/jobs/resolve', { url }, token);
+  return postData<ResolvedPage>('/api/v1/jobs/resolve', { url, surface: 'extension' }, token);
 }
 
 /** The sentence the panel shows for each outcome. Pure. */
@@ -138,6 +144,8 @@ export function resolveNotice(status: ResolveStatus): string {
   switch (status) {
     case 'imported':
       return '✓ Added to freehire — here is your match.';
+    case 'tracked':
+      return '✓ Added — freehire already follows this company, so its other roles will show up too.';
     case 'found':
       return 'freehire already had this posting — here is your match.';
     case 'queued':
