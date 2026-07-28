@@ -1,6 +1,10 @@
 import { HIRE_ORIGIN } from './auth';
 
-/** Hosts whose /jobs/<slug> pages we recognise as freehire job postings. */
+/** Hosts whose /jobs/<slug> pages we recognise as freehire job postings.
+ *
+ * freehire.dev stays on purpose: it is the pre-migration domain, and a user can
+ * still land on one of its job pages from an old link or bookmark. This list
+ * recognises what a tab might show, so it must outlive the canonical domain. */
 const JOB_HOSTS = ['freehire.me', 'www.freehire.me', 'freehire.dev', 'localhost'];
 
 /**
@@ -19,10 +23,14 @@ export function freehireSlugFromUrl(rawUrl: string): string | null {
   return m ? m[1] : null;
 }
 
-/** freehire's company-logo proxy URL for a company name (404s → placeholder). */
+/** freehire's company-logo proxy URL for a company name (404s → placeholder).
+ *
+ * logo.freehire.me, matching the web app's COMPANY_LOGO_BASE. Both hosts serve,
+ * so this was not broken — only divergent, and divergence is what leaves one of
+ * two call sites behind on the next change. */
 export function companyLogoUrl(company: string): string | null {
   const c = company.trim();
-  return c ? `https://logo.freehire.dev/${encodeURIComponent(c)}` : null;
+  return c ? `https://logo.freehire.me/${encodeURIComponent(c)}` : null;
 }
 
 /** The slice of a freehire job the card renders. */
