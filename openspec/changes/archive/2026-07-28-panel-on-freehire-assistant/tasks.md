@@ -42,4 +42,4 @@ is a divergence and needs saying so in a comment.
 ## 6. Verify
 
 - [x] 6.1 `npm test`, `npm run check`, `npm run build`.
-- [ ] 6.2 Load the built extension against a local hire and hold one conversation: a turn streams, a tool call renders, `read_current_page` returns the open page, cancelling stops a turn, and reopening the panel resumes it.
+- [x] 6.2 Load the built extension against a local hire and hold one conversation: a turn streams, a tool call renders, `read_current_page` returns the open page, cancelling stops a turn, and reopening the panel resumes it.
