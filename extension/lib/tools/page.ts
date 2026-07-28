@@ -7,6 +7,7 @@
 import { browser } from 'wxt/browser';
 import type { ComboboxStep, LabelFill, RuntimeMessage } from '../protocol';
 import type { FormObservation, PageBridge } from './executor';
+import { isReadablePageUrl, NOT_A_WEB_PAGE } from './readable';
 
 async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined> {
   return (await browser.runtime.sendMessage(message)) as RuntimeMessage | undefined;
@@ -14,6 +15,10 @@ async function ask(message: RuntimeMessage): Promise<RuntimeMessage | undefined>
 
 export const activeTabPage: PageBridge = {
   async readPage() {
+    // Decided from the url, before the page is read — the point is to not read it.
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!isReadablePageUrl(tab?.url)) throw new Error(NOT_A_WEB_PAGE);
+
     const reply = await ask({ kind: 'GET_PAGE_SNAPSHOT' });
     // The background answers "no active tab" with an empty snapshot rather than a
     // failure, which suits the match card (it just shows nothing). Here it would

@@ -103,6 +103,13 @@ content --PAGE_SNAPSHOT--> background --> panel --> relay --> the agent, mid-tur
   (panel <-> background <-> content, discriminated by `kind`). Neither the chat's
   wire nor the browser-tool wire is here: they are `lib/assistant/wire.ts` and
   `lib/tools/wire.ts`, each mirroring a contract hire owns.
+- **The agent's reading is bounded, and visible.** `read_page` refuses any tab that
+  is not `http(s)` (`lib/tools/readable.ts`), decided from the url before the page
+  is read — this extension is the only side that sees a url before scraping it. The
+  panel then names the page each read touched, minus query and fragment, which is
+  where session tokens live. That display lives in `lib/assistant/pageRead.ts`
+  rather than in `tool-formatters.ts`, precisely because the latter is a verbatim
+  port and `read_current_page` cannot occur in the web app.
 - **`lib/assistant/` mirrors the freehire web assistant** (`web/src/lib/assistant`
   in the hire repo). `sse`, `wire`, `chat`, `deck` and `tool-formatters` are
   verbatim ports — keep them aligned. Exactly two files diverge, and they say so
