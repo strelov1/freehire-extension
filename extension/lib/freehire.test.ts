@@ -44,6 +44,16 @@ describe('resolveNotice', () => {
     expect(resolveNotice('queued')).toMatch(/look/i);
   });
 
+  it('distinguishes a company freehire already follows from a new one', () => {
+    // Both imported the posting, so both must confirm it landed — but only one of them can
+    // promise the company's other roles will appear, and saying that of an uncrawled company
+    // would be a promise we cannot keep until its board is onboarded.
+    const tracked = resolveNotice('tracked');
+    expect(tracked).toMatch(/added/i);
+    expect(tracked).toMatch(/already/i);
+    expect(tracked).not.toBe(resolveNotice('imported'));
+  });
+
   it('stays generic for a status it does not know', () => {
     expect(resolveNotice('something-new' as never)).toBeTruthy();
   });
