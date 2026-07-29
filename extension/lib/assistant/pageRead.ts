@@ -25,18 +25,15 @@ import type { ToolCall } from './tool-formatters';
  */
 export function pageReadTarget(call: ToolCall): string {
   if (call.isError || !call.result) return '';
-  let url: unknown;
   try {
-    url = (JSON.parse(call.result) as { url?: unknown }).url;
-  } catch {
-    return '';
-  }
-  if (typeof url !== 'string') return '';
-  try {
-    const parsed = new URL(url);
+    const { url } = JSON.parse(call.result) as { url?: unknown };
+    if (typeof url !== 'string') return '';
+    const { host, pathname } = new URL(url);
     // A root path renders as the bare host: "example.test", not "example.test/".
-    return parsed.pathname === '/' ? parsed.host : parsed.host + parsed.pathname;
+    return pathname === '/' ? host : host + pathname;
   } catch {
+    // Unparseable JSON and an unparseable url are the same outcome here — there is
+    // no page to name — so they share one exit rather than two identical ones.
     return '';
   }
 }
